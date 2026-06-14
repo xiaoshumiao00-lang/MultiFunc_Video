@@ -42,7 +42,7 @@
     "inputs": {
       "steps": 4,
       "cfg": 1.0000000000000002,
-      "shift": 11.000000000000002,
+      "shift": 9.0,
       "seed": 1,
       "force_offload": true,
       "scheduler": "flowmatch_distill",
