@@ -1,0 +1,36 @@
+# Python embedded runtime (630MB, binary)
+python/
+
+# FFmpeg and binary tools (547MB)
+tools/
+
+# Generated output videos
+output/*.mp4
+output/*.avi
+output/*.mov
+output/*.mkv
+
+# ComfyUI model cache and heavy assets
+Pixelle-Video/models/
+Pixelle-Video/__pycache__/
+Pixelle-Video/**/__pycache__/
+Pixelle-Video/**/*.pyc
+Pixelle-Video/**/*.pyo
+
+# Config with secrets
+Pixelle-Video/config.yaml
+
+# Temp files
+temp/
+nul
+
+# WorkBuddy internal
+.workbuddy/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
