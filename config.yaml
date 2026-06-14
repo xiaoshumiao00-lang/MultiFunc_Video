@@ -1,0 +1,28 @@
+project_name: MultiFunc_Video
+llm:
+  api_key: ollama
+  base_url: http://localhost:11434/v1
+  model: qwen2.5:7b
+comfyui:
+  comfyui_url: http://127.0.0.1:8188
+  comfyui_api_key: null
+  runninghub_api_key: 13c51fdd84e64dec942693fa12ffddb6
+  runninghub_concurrent_limit: 1
+  runninghub_instance_type: null
+  tts:
+    inference_mode: local
+    local:
+      voice: zh-CN-YunjianNeural
+      speed: 1.2
+    comfyui:
+      default_workflow: null
+  image:
+    default_workflow: null
+    prompt_prefix: Minimalist black-and-white matchstick figure style illustration,
+      clean lines, simple sketch style
+  video:
+    default_workflow: null
+    prompt_prefix: Minimalist black-and-white matchstick figure style illustration,
+      clean lines, simple sketch style
+template:
+  default_template: 1080x1920/default.html

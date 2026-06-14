@@ -3,14 +3,14 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo ========================================
-echo   Pixelle-Video - Windows Launcher
+echo   MultiFunc_Video - Windows Launcher
 echo ========================================
 echo.
 
 :: Set environment variables
 set "PYTHON_HOME=%~dp0python\python311"
 set "PATH=%PYTHON_HOME%;%PYTHON_HOME%\Scripts;%~dp0tools\ffmpeg\bin;%PATH%"
-set "PROJECT_ROOT=%~dp0Pixelle-Video"
+set "PROJECT_ROOT=%~dp0MultiFunc_Video"
 
 :: Change to project directory
 cd /d "%PROJECT_ROOT%"
@@ -18,11 +18,11 @@ cd /d "%PROJECT_ROOT%"
 :: Set PYTHONPATH to project root for module imports
 set "PYTHONPATH=%PROJECT_ROOT%"
 
-:: Set PIXELLE_VIDEO_ROOT environment variable for reliable path resolution
-set "PIXELLE_VIDEO_ROOT=%PROJECT_ROOT%"
+:: Set MULTIFUNC_VIDEO_ROOT environment variable for reliable path resolution
+set "MULTIFUNC_VIDEO_ROOT=%PROJECT_ROOT%"
 
 :: Start Web UI
-echo [Starting] Launching Pixelle-Video Web UI...
+echo [Starting] Launching MultiFunc_Video Web UI...
 echo Browser will open automatically.
 echo.
 echo Note: Configure API keys and settings in the Web UI.
