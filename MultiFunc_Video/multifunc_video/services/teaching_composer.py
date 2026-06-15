@@ -22,6 +22,7 @@ Orchestrates:
 """
 
 import os
+import re
 import json
 import asyncio
 import shutil
@@ -157,7 +158,8 @@ class TeachingComposer:
             raise ValueError("未能从课件中解析出任何幻灯片")
 
         # Step 2: Generate or use teaching script
-        if params.teaching_script and params.teaching_script.strip():
+        user_provided_script = bool(params.teaching_script and params.teaching_script.strip())
+        if user_provided_script:
             full_script = params.teaching_script.strip()
             report(2, "使用用户提供的口播文案")
         else:
@@ -168,7 +170,9 @@ class TeachingComposer:
 
         # Step 3: Split script into segments with flexible slide mapping
         report(3, "分段并对齐课件页...")
-        segments = await self._split_script_into_segments(full_script, slides)
+        segments = await self._split_script_into_segments(
+            full_script, slides, preserve_script=user_provided_script
+        )
         logger.info(f"文案已分为 {len(segments)} 个片段")
         self._save_debug_json(params.task_dir, "segments.json", [
             {
@@ -267,16 +271,27 @@ class TeachingComposer:
     async def _split_script_into_segments(
         self,
         full_script: str,
-        slides: List[SlideInfo]
+        slides: List[SlideInfo],
+        preserve_script: bool = False,
     ) -> List[Segment]:
         """
         Split full script into short segments with flexible slide mapping.
         Each segment is annotated with the slide range it covers.
-        """
-        from multifunc_video.prompts.teaching_script_generation import build_free_segment_prompt
 
+        Args:
+            full_script: The complete narration script.
+            slides: List of parsed slide information.
+            preserve_script: If True, split the script deterministically without
+                calling an LLM. This guarantees no extra content is added and is
+                the recommended mode when the user provides their own script.
+        """
         if len(slides) == 1:
             return [Segment(text=full_script, slide_start=0, slide_end=0)]
+
+        if preserve_script:
+            return self._split_script_by_rules(full_script, len(slides))
+
+        from multifunc_video.prompts.teaching_script_generation import build_free_segment_prompt
 
         slide_dicts = [{"index": s.index, "title": s.title, "text": s.text} for s in slides]
         prompt = build_free_segment_prompt(full_script, slide_dicts)
@@ -300,6 +315,88 @@ class TeachingComposer:
             segments = response.segments
 
         segments = self._normalize_segments(segments, full_script, len(slides))
+        return segments
+
+    def _split_script_by_rules(
+        self,
+        full_script: str,
+        num_slides: int
+    ) -> List[Segment]:
+        """
+        Deterministically split a user-provided script into short segments.
+
+        Guarantees:
+        - No text is added, removed, or reordered.
+        - Each segment's text is a contiguous substring of ``full_script``.
+        - Segments are aligned to sentence boundaries where possible.
+        """
+        full_script = full_script.strip()
+        if not full_script:
+            raise ValueError("口播文案为空")
+
+        # Sentence-ending punctuation in Chinese.
+        sentence_end_re = re.compile(r"([。！？；\.\?!]+)")
+        # Split while keeping the punctuation with the preceding clause.
+        raw_parts = sentence_end_re.split(full_script)
+        sentences = []
+        current = ""
+        for part in raw_parts:
+            current += part
+            if sentence_end_re.match(part):
+                stripped = current.strip()
+                if stripped:
+                    sentences.append(stripped)
+                current = ""
+        tail = current.strip()
+        if tail:
+            sentences.append(tail)
+
+        if not sentences:
+            sentences = [full_script]
+
+        # Target ~12 seconds of Chinese speech per segment (roughly 25-35 chars).
+        max_segment_chars = 35
+        segments: List[Segment] = []
+        buffer = ""
+
+        for sentence in sentences:
+            if len(buffer) + len(sentence) <= max_segment_chars:
+                buffer += sentence
+                continue
+
+            # If the current sentence alone exceeds the limit, split it by commas.
+            if not buffer:
+                clauses = re.split(r"([，,])", sentence)
+                for clause in clauses:
+                    if not clause:
+                        continue
+                    if len(buffer) + len(clause) <= max_segment_chars:
+                        buffer += clause
+                    else:
+                        if buffer:
+                            segments.append(Segment(text=buffer, slide_start=0, slide_end=0))
+                        buffer = clause
+                continue
+
+            segments.append(Segment(text=buffer, slide_start=0, slide_end=0))
+            buffer = sentence
+
+        if buffer:
+            segments.append(Segment(text=buffer, slide_start=0, slide_end=0))
+
+        if not segments:
+            segments.append(Segment(text=full_script, slide_start=0, slide_end=0))
+
+        # Distribute segments across slides proportionally if there are multiple slides.
+        # When the user provides an intro-only script, all segments default to slide 0;
+        # this only spreads them if the caller explicitly wants per-slide pacing.
+        if num_slides > 1:
+            total = len(segments)
+            for i, seg in enumerate(segments):
+                slide_idx = min(int(i * num_slides / total), num_slides - 1)
+                seg.slide_start = slide_idx
+                seg.slide_end = slide_idx
+
         return segments
 
     def _normalize_segments(
