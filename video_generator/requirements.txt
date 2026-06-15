@@ -1,0 +1,16 @@
+# 核心依赖
+edge-tts>=6.1.12
+httpx>=0.27.0
+pydub>=0.25.1
+pillow>=10.0.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+moviepy>=1.0.3
+pandas>=2.0.0
+gradio>=4.0.0
+
+# 可选：Whisper字幕同步（需要更大模型）
+# openai-whisper>=20231117
+
+# 可选：本地SD WebUI API调用
+# requests>=2.31.0

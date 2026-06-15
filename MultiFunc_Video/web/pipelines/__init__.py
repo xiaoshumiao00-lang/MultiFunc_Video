@@ -30,6 +30,7 @@ from web.pipelines import digital_human
 from web.pipelines import digital_teaching
 from web.pipelines import i2v
 from web.pipelines import action_transfer
+from web.pipelines import image_text_video
 
 __all__ = [
     "PipelineUI",

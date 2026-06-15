@@ -23,7 +23,7 @@ class TTSSynthesizeRequest(BaseModel):
     text: str = Field(..., description="Text to synthesize")
     inference_mode: Optional[str] = Field(
         None,
-        description="TTS inference mode: 'local', 'comfyui', or 'gpt_sovits'. If not specified, uses default from config."
+        description="TTS inference mode: 'local', 'comfyui', 'gpt_sovits', or 'qwen3_tts'. If not specified, uses default from config."
     )
     workflow: Optional[str] = Field(
         None, 
@@ -44,7 +44,14 @@ class TTSSynthesizeRequest(BaseModel):
     gpt_sovits_prompt_text: Optional[str] = Field(None, description="GPT-SoVITS reference audio transcription")
     gpt_sovits_prompt_lang: Optional[str] = Field(None, description="GPT-SoVITS reference audio language")
     gpt_sovits_text_lang: Optional[str] = Field(None, description="GPT-SoVITS synthesis text language")
-    
+    # Qwen3-TTS parameters
+    qwen3_tts_model_path: Optional[str] = Field(None, description="Qwen3-TTS model root path")
+    qwen3_tts_device: Optional[str] = Field(None, description="Qwen3-TTS device: 'cuda' or 'cpu'")
+    qwen3_tts_ref_audio: Optional[str] = Field(None, description="Qwen3-TTS reference audio path for voice cloning")
+    qwen3_tts_prompt_text: Optional[str] = Field(None, description="Qwen3-TTS reference audio transcription")
+    qwen3_tts_speaker: Optional[str] = Field(None, description="Qwen3-TTS predefined speaker name (for CustomVoice models)")
+    qwen3_tts_language: Optional[str] = Field(None, description="Qwen3-TTS synthesis language: 'Auto', 'zh', or 'en'")
+
     class Config:
         json_schema_extra = {
             "example": {

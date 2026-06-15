@@ -11,14 +11,35 @@ output/*.mov
 output/*.mkv
 
 # ComfyUI model cache and heavy assets
-Pixelle-Video/models/
-Pixelle-Video/__pycache__/
-Pixelle-Video/**/__pycache__/
-Pixelle-Video/**/*.pyc
-Pixelle-Video/**/*.pyo
+MultiFunc_Video/models/
+MultiFunc_Video/__pycache__/
+MultiFunc_Video/**/__pycache__/
+MultiFunc_Video/**/*.pyc
+MultiFunc_Video/**/*.pyo
 
 # Config with secrets
-Pixelle-Video/config.yaml
+MultiFunc_Video/config.yaml
+config.yaml
+
+# Qwen3 TTS model weights
+Qwen3_TTS/**/*.safetensors
+Qwen3_TTS/**/*.bin
+Qwen3_TTS/**/*.pth
+Qwen3_TTS/**/*.ckpt
+Qwen3_TTS/**/*.pt
+
+# video_generator outputs and caches
+video_generator/outputs/
+video_generator/__pycache__/
+video_generator/**/__pycache__/
+video_generator/**/*.pyc
+video_generator/**/*.pyo
+video_generator/**/*.safetensors
+video_generator/**/*.pth
+video_generator/**/*.ckpt
+
+# Wrapper temp files
+video_generator/_multifunc_wrapper_*
 
 # Temp files
 temp/

@@ -53,12 +53,27 @@ class TTSSoVITSConfig(BaseModel):
     default_ref_audio: str = Field(default="", description="Default reference audio path")
 
 
+class TTSQwen3Config(BaseModel):
+    """Qwen3-TTS configuration"""
+    model_path: str = Field(
+        default=r"D:\陈潘HBEU\Desktop\MultiFunc_Video\Qwen3_TTS\Qwen3-TTS-12Hz-1___7B-Base",
+        description="Qwen3-TTS model root path"
+    )
+    device: str = Field(default="cuda", description="Device to run the model on: 'cuda' or 'cpu'")
+    default_ref_audio: str = Field(default="", description="Default reference audio path for voice cloning")
+    default_prompt_text: str = Field(default="", description="Transcription of the default reference audio")
+    speaker: Optional[str] = Field(default=None, description="Predefined speaker name (for CustomVoice models)")
+    language: str = Field(default="Auto", description="Language: 'Auto', 'zh', or 'en'")
+    speed: float = Field(default=1.0, ge=0.5, le=2.0, description="Speech speed multiplier")
+
+
 class TTSSubConfig(BaseModel):
     """TTS-specific configuration (under comfyui.tts)"""
-    inference_mode: str = Field(default="local", description="TTS inference mode: 'local', 'comfyui', or 'gpt_sovits'")
+    inference_mode: str = Field(default="local", description="TTS inference mode: 'local', 'comfyui', 'gpt_sovits', or 'qwen3_tts'")
     local: TTSLocalConfig = Field(default_factory=TTSLocalConfig, description="Local TTS (Edge TTS) configuration")
     comfyui: TTSComfyUIConfig = Field(default_factory=TTSComfyUIConfig, description="ComfyUI TTS configuration")
     gpt_sovits: TTSSoVITSConfig = Field(default_factory=TTSSoVITSConfig, description="GPT-SoVITS TTS configuration")
+    qwen3_tts: TTSQwen3Config = Field(default_factory=TTSQwen3Config, description="Qwen3-TTS configuration")
     
     # Backward compatibility: keep default_workflow at top level
     @property

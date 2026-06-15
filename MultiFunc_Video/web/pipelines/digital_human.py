@@ -419,6 +419,25 @@ class DigitalHumanPipelineUI(PipelineUI):
                                 tts_kwargs["gpt_sovits_prompt_text"] = sovits_prompt_text
                                 tts_kwargs["gpt_sovits_prompt_lang"] = sovits_prompt_lang
                                 tts_kwargs["gpt_sovits_text_lang"] = sovits_text_lang
+                            elif tts_inference_mode == "qwen3_tts":
+                                tts_kwargs["speed"] = tts_speed
+                                qwen3_model_path = video_params.get("qwen3_tts_model_path")
+                                qwen3_device = video_params.get("qwen3_tts_device")
+                                qwen3_ref_audio = video_params.get("qwen3_tts_ref_audio")
+                                qwen3_prompt_text = video_params.get("qwen3_tts_prompt_text", "")
+                                qwen3_speaker = video_params.get("qwen3_tts_speaker")
+                                qwen3_language = video_params.get("qwen3_tts_language")
+                                if qwen3_model_path:
+                                    tts_kwargs["qwen3_tts_model_path"] = qwen3_model_path
+                                if qwen3_device:
+                                    tts_kwargs["qwen3_tts_device"] = qwen3_device
+                                if qwen3_ref_audio:
+                                    tts_kwargs["qwen3_tts_ref_audio"] = qwen3_ref_audio
+                                tts_kwargs["qwen3_tts_prompt_text"] = qwen3_prompt_text
+                                if qwen3_speaker:
+                                    tts_kwargs["qwen3_tts_speaker"] = qwen3_speaker
+                                if qwen3_language:
+                                    tts_kwargs["qwen3_tts_language"] = qwen3_language
 
                             await multifunc_video.tts(**tts_kwargs)
                             progress_bar.progress(65)

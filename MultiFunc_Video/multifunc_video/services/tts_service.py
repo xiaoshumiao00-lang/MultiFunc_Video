@@ -29,6 +29,7 @@ from comfykit import ComfyKit
 from loguru import logger
 
 from multifunc_video.services.comfy_base_service import ComfyBaseService
+from multifunc_video.services.qwen3_tts_service import Qwen3TTSService, get_qwen3_tts_service
 from multifunc_video.utils.tts_util import edge_tts
 from multifunc_video.tts_voices import speed_to_rate
 
@@ -89,13 +90,20 @@ class TTSService(ComfyBaseService):
         gpt_sovits_prompt_text: Optional[str] = None,
         gpt_sovits_prompt_lang: Optional[str] = None,
         gpt_sovits_text_lang: Optional[str] = None,
-        # Lifecycle control (mainly for GPT-SoVITS batch usage)
+        # Qwen3-TTS parameters
+        qwen3_tts_model_path: Optional[str] = None,
+        qwen3_tts_device: Optional[str] = None,
+        qwen3_tts_ref_audio: Optional[str] = None,
+        qwen3_tts_prompt_text: Optional[str] = None,
+        qwen3_tts_speaker: Optional[str] = None,
+        qwen3_tts_language: Optional[str] = None,
+        # Lifecycle control (mainly for GPT-SoVITS / Qwen3-TTS batch usage)
         auto_shutdown: bool = True,
         **params
     ) -> str:
         """
-        Generate speech using local Edge TTS, ComfyUI workflow, or GPT-SoVITS
-        
+        Generate speech using local Edge TTS, ComfyUI workflow, GPT-SoVITS, or Qwen3-TTS.
+
         Args:
             text: Text to convert to speech
             workflow: Workflow filename (for ComfyUI mode, default: from config)
@@ -103,7 +111,7 @@ class TTSService(ComfyBaseService):
             runninghub_api_key: RunningHub API key (optional, overrides config)
             voice: Voice ID (for local mode: Edge TTS voice ID; for ComfyUI: workflow-specific)
             speed: Speech speed multiplier (1.0 = normal, >1.0 = faster, <1.0 = slower)
-            inference_mode: Override inference mode ("local", "comfyui", or "gpt_sovits", default: from config)
+            inference_mode: Override inference mode ("local", "comfyui", "gpt_sovits", or "qwen3_tts", default: from config)
             output_path: Custom output path (auto-generated if None)
             gpt_sovits_project_path: GPT-SoVITS project root path (overrides config)
             gpt_sovits_api_url: GPT-SoVITS API URL (overrides config)
@@ -111,10 +119,16 @@ class TTSService(ComfyBaseService):
             gpt_sovits_prompt_text: Reference audio transcription text
             gpt_sovits_prompt_lang: Reference audio language
             gpt_sovits_text_lang: Synthesis text language
-            auto_shutdown: If False, keep GPT-SoVITS API running after this call
+            qwen3_tts_model_path: Qwen3-TTS model root path (overrides config)
+            qwen3_tts_device: Device to run Qwen3-TTS on (overrides config)
+            qwen3_tts_ref_audio: Reference audio path for Qwen3-TTS voice cloning
+            qwen3_tts_prompt_text: Reference audio transcription for Qwen3-TTS
+            qwen3_tts_speaker: Predefined speaker name for Qwen3-TTS CustomVoice models
+            qwen3_tts_language: Language for Qwen3-TTS synthesis
+            auto_shutdown: If False, keep GPT-SoVITS API / Qwen3-TTS model loaded after this call
                 (caller is responsible for shutting it down)
             **params: Additional workflow parameters
-        
+
         Returns:
             Generated audio file path
         """
@@ -140,6 +154,19 @@ class TTSService(ComfyBaseService):
                 prompt_text=gpt_sovits_prompt_text,
                 prompt_lang=gpt_sovits_prompt_lang,
                 text_lang=gpt_sovits_text_lang,
+                auto_shutdown=auto_shutdown,
+            )
+        elif mode == "qwen3_tts":
+            return await self._call_qwen3_tts(
+                text=text,
+                speed=speed,
+                output_path=output_path,
+                model_path=qwen3_tts_model_path,
+                device=qwen3_tts_device,
+                ref_audio=qwen3_tts_ref_audio,
+                prompt_text=qwen3_tts_prompt_text,
+                speaker=qwen3_tts_speaker,
+                language=qwen3_tts_language,
                 auto_shutdown=auto_shutdown,
             )
         else:  # comfyui
@@ -336,6 +363,178 @@ class TTSService(ComfyBaseService):
         except Exception as e:
             logger.error(f"TTS generation error: {e}")
             raise
+
+    # ========================================================================
+    # Qwen3-TTS
+    # ========================================================================
+
+    _qwen3_tts_service: Optional[Qwen3TTSService] = None
+
+    async def _call_qwen3_tts(
+        self,
+        text: str,
+        speed: Optional[float] = None,
+        output_path: Optional[str] = None,
+        model_path: Optional[str] = None,
+        device: Optional[str] = None,
+        ref_audio: Optional[str] = None,
+        prompt_text: Optional[str] = None,
+        speaker: Optional[str] = None,
+        language: Optional[str] = None,
+        auto_shutdown: bool = True,
+    ) -> str:
+        """
+        Generate speech using local Qwen3-TTS (auto-load model, auto-unload after).
+
+        Args:
+            text: Text to convert to speech
+            speed: Speech speed multiplier
+            output_path: Custom output path (auto-generated if None)
+            model_path: Qwen3-TTS model root path (overrides config)
+            device: Device to run the model on (overrides config)
+            ref_audio: Reference audio path for voice cloning
+            prompt_text: Reference audio transcription
+            speaker: Predefined speaker name (for CustomVoice models)
+            language: Synthesis language
+            auto_shutdown: If False, keep the model loaded for subsequent calls
+                (caller must call unload_qwen3_tts_model later)
+
+        Returns:
+            Generated audio file path
+        """
+        qwen_config = self.config.get("qwen3_tts", {})
+        final_model_path = model_path or qwen_config.get("model_path", "")
+        final_device = device or qwen_config.get("device", "cuda")
+        final_ref_audio = ref_audio or qwen_config.get("default_ref_audio") or None
+        final_prompt_text = prompt_text or qwen_config.get("default_prompt_text", "")
+        final_speaker = speaker or qwen_config.get("speaker") or None
+        final_language = language or qwen_config.get("language", "Auto")
+        final_speed = speed if speed is not None else qwen_config.get("speed", 1.0)
+
+        if not final_model_path:
+            raise ValueError(
+                "Qwen3-TTS 模型路径未配置，请在设置中填写 model_path"
+            )
+
+        if not output_path:
+            unique_id = uuid.uuid4().hex
+            output_path = f"output/{unique_id}.wav"
+            Path("output").mkdir(parents=True, exist_ok=True)
+
+        if not output_path.endswith(".wav"):
+            output_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+        try:
+            service = self._ensure_qwen3_tts_service(
+                model_path=final_model_path,
+                device=final_device,
+                ref_audio_path=final_ref_audio,
+                prompt_text=final_prompt_text,
+                speaker=final_speaker,
+                language=final_language,
+                speed=final_speed,
+            )
+
+            logger.info(
+                f"🎙️  Using Qwen3-TTS: model_path={final_model_path}, "
+                f"ref_audio={final_ref_audio}, speed={final_speed}"
+            )
+
+            # Run blocking inference in a thread pool to keep the event loop responsive
+            import functools
+            loop = asyncio.get_event_loop()
+            audio_path = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    service.synthesize,
+                    text=text,
+                    output_path=output_path,
+                    ref_audio_path=final_ref_audio,
+                    prompt_text=final_prompt_text,
+                    speaker=final_speaker,
+                    language=final_language,
+                    speed=final_speed,
+                ),
+            )
+
+            logger.info(f"✅ Generated audio (Qwen3-TTS): {audio_path}")
+            return audio_path
+
+        finally:
+            if auto_shutdown:
+                self.unload_qwen3_tts_model()
+
+    def _ensure_qwen3_tts_service(
+        self,
+        model_path: str,
+        device: str,
+        ref_audio_path: Optional[str],
+        prompt_text: str,
+        speaker: Optional[str],
+        language: str,
+        speed: float,
+    ) -> Qwen3TTSService:
+        """Return the existing Qwen3-TTS service or create and load a new one."""
+        if TTSService._qwen3_tts_service is not None:
+            service = TTSService._qwen3_tts_service
+            # If the model path changed, unload and recreate
+            if service.model_path != model_path:
+                logger.info("Qwen3-TTS model path changed, reloading")
+                Qwen3TTSService.unload()
+                TTSService._qwen3_tts_service = None
+            else:
+                return service
+
+        service = Qwen3TTSService(
+            model_path=model_path,
+            device=device,
+            ref_audio_path=ref_audio_path,
+            prompt_text=prompt_text,
+            speaker=speaker,
+            language=language,
+            speed=speed,
+        )
+        service.load()
+        TTSService._qwen3_tts_service = service
+        return service
+
+    def unload_qwen3_tts_model(self) -> None:
+        """Unload the Qwen3-TTS model and release GPU memory."""
+        Qwen3TTSService.unload()
+        TTSService._qwen3_tts_service = None
+
+    async def start_qwen3_tts_model(
+        self,
+        model_path: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> bool:
+        """
+        Ensure Qwen3-TTS model is loaded for batch TTS calls.
+
+        Returns:
+            True if the model was loaded by this call, False if already loaded.
+        """
+        qwen_config = self.config.get("qwen3_tts", {})
+        final_model_path = model_path or qwen_config.get("model_path", "")
+        final_device = device or qwen_config.get("device", "cuda")
+
+        if TTSService._qwen3_tts_service is not None:
+            if TTSService._qwen3_tts_service.model_path == final_model_path:
+                return False
+            Qwen3TTSService.unload()
+            TTSService._qwen3_tts_service = None
+
+        service = Qwen3TTSService(
+            model_path=final_model_path,
+            device=final_device,
+        )
+        service.load()
+        TTSService._qwen3_tts_service = service
+        return True
+
+    async def stop_qwen3_tts_model(self) -> None:
+        """Shutdown Qwen3-TTS model and release GPU memory."""
+        self.unload_qwen3_tts_model()
 
     # ========================================================================
     # GPT-SoVITS TTS

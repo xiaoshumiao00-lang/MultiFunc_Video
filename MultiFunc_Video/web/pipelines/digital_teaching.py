@@ -344,6 +344,12 @@ class DigitalTeachingPipelineUI(PipelineUI):
                             gpt_sovits_prompt_text=video_params.get("gpt_sovits_prompt_text", ""),
                             gpt_sovits_prompt_lang=video_params.get("gpt_sovits_prompt_lang", "zh"),
                             gpt_sovits_text_lang=video_params.get("gpt_sovits_text_lang", "zh"),
+                            qwen3_tts_model_path=video_params.get("qwen3_tts_model_path"),
+                            qwen3_tts_device=video_params.get("qwen3_tts_device"),
+                            qwen3_tts_ref_audio=video_params.get("qwen3_tts_ref_audio"),
+                            qwen3_tts_prompt_text=video_params.get("qwen3_tts_prompt_text", ""),
+                            qwen3_tts_speaker=video_params.get("qwen3_tts_speaker"),
+                            qwen3_tts_language=video_params.get("qwen3_tts_language"),
                         )
                         
                         llm_service = LLMService(config_manager.get_llm_config())

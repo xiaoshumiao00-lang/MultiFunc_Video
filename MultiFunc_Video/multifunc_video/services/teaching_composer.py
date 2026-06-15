@@ -108,6 +108,13 @@ class TeachingCompositionParams:
     gpt_sovits_prompt_text: str = ""
     gpt_sovits_prompt_lang: str = "zh"
     gpt_sovits_text_lang: str = "zh"
+    # Qwen3-TTS parameters
+    qwen3_tts_model_path: Optional[str] = None
+    qwen3_tts_device: Optional[str] = None
+    qwen3_tts_ref_audio: Optional[str] = None
+    qwen3_tts_prompt_text: str = ""
+    qwen3_tts_speaker: Optional[str] = None
+    qwen3_tts_language: Optional[str] = None
     # Final output audio volume multiplier (1.0 = original, >1 louder, <1 quieter)
     audio_volume: float = 1.0
 
@@ -478,6 +485,20 @@ class TeachingComposer:
                 tts_kwargs["gpt_sovits_prompt_lang"] = params.gpt_sovits_prompt_lang
             if hasattr(params, "gpt_sovits_text_lang"):
                 tts_kwargs["gpt_sovits_text_lang"] = params.gpt_sovits_text_lang
+        elif params.tts_inference_mode == "qwen3_tts":
+            tts_kwargs["speed"] = speed_override if speed_override is not None else params.tts_speed
+            if hasattr(params, "qwen3_tts_model_path") and params.qwen3_tts_model_path:
+                tts_kwargs["qwen3_tts_model_path"] = params.qwen3_tts_model_path
+            if hasattr(params, "qwen3_tts_device") and params.qwen3_tts_device:
+                tts_kwargs["qwen3_tts_device"] = params.qwen3_tts_device
+            if hasattr(params, "qwen3_tts_ref_audio") and params.qwen3_tts_ref_audio:
+                tts_kwargs["qwen3_tts_ref_audio"] = params.qwen3_tts_ref_audio
+            if hasattr(params, "qwen3_tts_prompt_text"):
+                tts_kwargs["qwen3_tts_prompt_text"] = params.qwen3_tts_prompt_text
+            if hasattr(params, "qwen3_tts_speaker") and params.qwen3_tts_speaker:
+                tts_kwargs["qwen3_tts_speaker"] = params.qwen3_tts_speaker
+            if hasattr(params, "qwen3_tts_language") and params.qwen3_tts_language:
+                tts_kwargs["qwen3_tts_language"] = params.qwen3_tts_language
 
         actual_path = await self.multifunc_video.tts(**tts_kwargs)
         return actual_path or output_path
@@ -504,10 +525,12 @@ class TeachingComposer:
 
         result: List[Segment] = []
 
-        # For GPT-SoVITS, keep the API alive across all segments to avoid
-        # reloading models for every sentence.
+        # For GPT-SoVITS / Qwen3-TTS, keep the backend alive across all segments
+        # to avoid reloading models for every sentence.
         api_started = False
         gpt_sovits_api_url = None
+        qwen3_model_loaded = False
+
         if params.tts_inference_mode == "gpt_sovits" and depth == 0:
             gpt_sovits_api_url = (
                 params.gpt_sovits_api_url
@@ -523,15 +546,22 @@ class TeachingComposer:
                 api_url=gpt_sovits_api_url,
             )
             logger.info("GPT-SoVITS API 预热完成")
+        elif params.tts_inference_mode == "qwen3_tts" and depth == 0:
+            logger.info("为 Qwen3-TTS 批量合成预热模型...")
+            qwen3_model_loaded = await self.multifunc_video.tts.start_qwen3_tts_model(
+                model_path=params.qwen3_tts_model_path,
+                device=params.qwen3_tts_device,
+            )
+            logger.info("Qwen3-TTS 模型预热完成")
 
         tts_auto_shutdown = (
-            False if params.tts_inference_mode == "gpt_sovits" else None
+            False if params.tts_inference_mode in ("gpt_sovits", "qwen3_tts") else None
         )
 
         try:
             for i, seg in enumerate(segments):
-                # Small pause between GPT-SoVITS calls to let GPU settle
-                if i > 0 and params.tts_inference_mode == "gpt_sovits":
+                # Small pause between local-GPU TTS calls to let GPU settle
+                if i > 0 and params.tts_inference_mode in ("gpt_sovits", "qwen3_tts"):
                     await asyncio.sleep(1.5)
 
                 seg_audio_path = os.path.join(params.task_dir, f"segment_{depth}_{i:03d}.mp3")
@@ -591,6 +621,12 @@ class TeachingComposer:
                     )
                 except Exception as e:
                     logger.warning(f"关闭 GPT-SoVITS API 失败: {e}")
+            if qwen3_model_loaded and params.tts_inference_mode == "qwen3_tts" and depth == 0:
+                logger.info("卸载 Qwen3-TTS 模型释放显存...")
+                try:
+                    await self.multifunc_video.tts.stop_qwen3_tts_model()
+                except Exception as e:
+                    logger.warning(f"卸载 Qwen3-TTS 模型失败: {e}")
 
         return result
 

@@ -58,22 +58,28 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
         tts_config = comfyui_config["tts"]
         
         # Inference mode selection
+        mode_options = ["local", "comfyui", "gpt_sovits", "qwen3_tts"]
+        saved_mode = tts_config.get("inference_mode", "local")
+        if saved_mode not in mode_options:
+            saved_mode = "local"
         tts_mode = cached_radio(
             tr("tts.inference_mode"),
             key=f"{key_prefix}_tts_inference_mode",
-            options=["local", "comfyui", "gpt_sovits"],
-            index=["local", "comfyui", "gpt_sovits"].index(tts_config.get("inference_mode", "local")),
+            options=mode_options,
+            index=mode_options.index(saved_mode),
             horizontal=True,
             format_func=lambda x: tr(f"tts.mode.{x}")
         )
-        
+
         # Show hint based on mode
         if tts_mode == "local":
             st.caption(tr("tts.mode.local_hint"))
         elif tts_mode == "comfyui":
             st.caption(tr("tts.mode.comfyui_hint"))
-        else:
+        elif tts_mode == "gpt_sovits":
             st.caption(tr("tts.mode.gpt_sovits_hint"))
+        else:
+            st.caption(tr("tts.mode.qwen3_tts_hint"))
         
         # ================================================================
         # Local Mode UI
@@ -141,7 +147,14 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
             sovits_prompt_text = ""
             sovits_prompt_lang = "zh"
             sovits_text_lang = "zh"
-        
+            # Qwen3-TTS variables (not used in this mode)
+            qwen3_model_path = ""
+            qwen3_device = "cuda"
+            qwen3_ref_audio_path = None
+            qwen3_prompt_text = ""
+            qwen3_speaker = ""
+            qwen3_language = "Auto"
+
         # ================================================================
         # ComfyUI Mode UI
         # ================================================================
@@ -249,7 +262,14 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
             sovits_prompt_text = ""
             sovits_prompt_lang = "zh"
             sovits_text_lang = "zh"
-        
+            # Qwen3-TTS variables (not used in this mode)
+            qwen3_model_path = ""
+            qwen3_device = "cuda"
+            qwen3_ref_audio_path = None
+            qwen3_prompt_text = ""
+            qwen3_speaker = ""
+            qwen3_language = "Auto"
+
         # ================================================================
         # GPT-SoVITS Mode UI
         # ================================================================
@@ -416,7 +436,117 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
             selected_voice = None
             tts_workflow_key = None
             ref_audio_path = None  # Not used for sovits mode
-        
+
+        # ================================================================
+        # Qwen3-TTS Mode UI
+        # ================================================================
+        elif tts_mode == "qwen3_tts":
+            qwen3_config = tts_config.get("qwen3_tts", {})
+
+            st.info(tr("tts.qwen3.auto_load_hint"))
+
+            # ---- Model path ----
+            saved_model_path = qwen3_config.get("model_path", "")
+            qwen3_model_path = cached_text_input(
+                tr("tts.qwen3.model_path"),
+                key=f"{key_prefix}_qwen3_model_path",
+                default=saved_model_path,
+                help=tr("tts.qwen3.model_path_help")
+            )
+
+            # ---- Device ----
+            device_options = {"cuda": "GPU (cuda)", "cpu": "CPU (cpu)"}
+            saved_device = qwen3_config.get("device", "cuda")
+            qwen3_device = cached_selectbox(
+                tr("tts.qwen3.device"),
+                key=f"{key_prefix}_qwen3_device",
+                options=list(device_options.keys()),
+                format_func=lambda x: device_options[x],
+                index=list(device_options.keys()).index(saved_device if saved_device in device_options else "cuda"),
+            )
+
+            # ---- Reference audio (file_uploader) ----
+            qwen3_ref_audio_upload_key = f"{key_prefix}_qwen3_ref_audio_upload"
+            qwen3_ref_audio_file = st.file_uploader(
+                tr("tts.qwen3.ref_audio"),
+                type=["mp3", "wav", "flac", "m4a", "aac", "ogg"],
+                help=tr("tts.qwen3.ref_audio_help"),
+                key=qwen3_ref_audio_upload_key
+            )
+
+            qwen3_ref_audio_path = None
+            if qwen3_ref_audio_file is not None:
+                st.audio(qwen3_ref_audio_file)
+                cached_paths = cache_uploaded_files(
+                    qwen3_ref_audio_upload_key,
+                    qwen3_ref_audio_file if isinstance(qwen3_ref_audio_file, list) else [qwen3_ref_audio_file]
+                )
+                if cached_paths:
+                    qwen3_ref_audio_path = Path(cached_paths[0])
+            else:
+                cached_paths = get_cached_file_paths(qwen3_ref_audio_upload_key)
+                if cached_paths:
+                    qwen3_ref_audio_path = Path(cached_paths[0])
+                    st.info(f"🔊 {tr('cache.using_cached_ref_audio')}: {qwen3_ref_audio_path.name}")
+                    st.audio(str(qwen3_ref_audio_path))
+                    if st.button(tr("cache.clear_ref_audio"), key=f"clear_{qwen3_ref_audio_upload_key}"):
+                        clear_cached_files(qwen3_ref_audio_upload_key)
+                        st.rerun()
+
+            # ---- Reference audio text and language ----
+            qwen3_prompt_text = cached_text_input(
+                tr("tts.qwen3.prompt_text"),
+                key=f"{key_prefix}_qwen3_prompt_text",
+                default="",
+                help=tr("tts.qwen3.prompt_text_help")
+            )
+
+            qwen3_lang_options = {"Auto": "自动", "zh": "中文", "en": "英文"}
+            saved_language = qwen3_config.get("language", "Auto")
+            qwen3_language = cached_selectbox(
+                tr("tts.qwen3.language"),
+                key=f"{key_prefix}_qwen3_language",
+                options=list(qwen3_lang_options.keys()),
+                format_func=lambda x: qwen3_lang_options[x],
+                index=list(qwen3_lang_options.keys()).index(
+                    saved_language if saved_language in qwen3_lang_options else "Auto"
+                ),
+            )
+
+            # Speaker (only meaningful for CustomVoice models, keep hidden-ish)
+            saved_speaker = qwen3_config.get("speaker", "")
+            qwen3_speaker = cached_text_input(
+                tr("tts.qwen3.speaker"),
+                key=f"{key_prefix}_qwen3_speaker",
+                default=saved_speaker or "",
+                help=tr("tts.qwen3.speaker_help")
+            )
+
+            # Speed slider
+            saved_speed = qwen3_config.get("speed", 1.0)
+            tts_speed = cached_slider(
+                tr("tts.speed"),
+                key=f"{key_prefix}_qwen3_speed",
+                min_value=0.5,
+                max_value=2.0,
+                value=saved_speed,
+                step=0.1,
+                format="%.1fx"
+            )
+            st.caption(tr("tts.speed_label", speed=f"{tts_speed:.1f}"))
+
+            # Variables for video generation
+            selected_voice = None
+            tts_workflow_key = None
+            ref_audio_path = None  # Not used for qwen3_tts mode
+            # GPT-SoVITS variables (not used in this mode)
+            sovits_project_path = ""
+            sovits_api_url = "http://127.0.0.1:9880"
+            sovits_ref_audio_path = None
+            sovits_prompt_text = ""
+            sovits_prompt_lang = "zh"
+            sovits_text_lang = "zh"
+
         # ================================================================
         # TTS Preview (works for all modes)
         # ================================================================
@@ -455,7 +585,16 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
                             tts_params["gpt_sovits_prompt_text"] = sovits_prompt_text
                             tts_params["gpt_sovits_prompt_lang"] = sovits_prompt_lang
                             tts_params["gpt_sovits_text_lang"] = sovits_text_lang
-                        
+                        elif tts_mode == "qwen3_tts":
+                            tts_params["speed"] = tts_speed
+                            tts_params["qwen3_tts_model_path"] = qwen3_model_path
+                            tts_params["qwen3_tts_device"] = qwen3_device
+                            if qwen3_ref_audio_path:
+                                tts_params["qwen3_tts_ref_audio"] = str(qwen3_ref_audio_path)
+                            tts_params["qwen3_tts_prompt_text"] = qwen3_prompt_text
+                            tts_params["qwen3_tts_speaker"] = qwen3_speaker or None
+                            tts_params["qwen3_tts_language"] = qwen3_language
+
                         audio_path = run_async(multifunc_video.tts(**tts_params))
                         
                         # Play the audio
@@ -498,5 +637,16 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
             "gpt_sovits_prompt_lang": sovits_prompt_lang,
             "gpt_sovits_text_lang": sovits_text_lang,
         })
-    
+
+    # Add Qwen3-TTS specific parameters
+    if tts_mode == "qwen3_tts":
+        result.update({
+            "qwen3_tts_model_path": qwen3_model_path,
+            "qwen3_tts_device": qwen3_device,
+            "qwen3_tts_ref_audio": str(qwen3_ref_audio_path) if qwen3_ref_audio_path else None,
+            "qwen3_tts_prompt_text": qwen3_prompt_text,
+            "qwen3_tts_speaker": qwen3_speaker or None,
+            "qwen3_tts_language": qwen3_language,
+        })
+
     return result

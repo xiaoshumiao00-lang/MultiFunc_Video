@@ -93,7 +93,20 @@ async def tts_synthesize(
         for key, value in sovits_fields.items():
             if value is not None:
                 tts_params[key] = value
-        
+
+        # Qwen3-TTS parameters
+        qwen3_fields = {
+            "qwen3_tts_model_path": request.qwen3_tts_model_path,
+            "qwen3_tts_device": request.qwen3_tts_device,
+            "qwen3_tts_ref_audio": request.qwen3_tts_ref_audio,
+            "qwen3_tts_prompt_text": request.qwen3_tts_prompt_text,
+            "qwen3_tts_speaker": request.qwen3_tts_speaker,
+            "qwen3_tts_language": request.qwen3_tts_language,
+        }
+        for key, value in qwen3_fields.items():
+            if value is not None:
+                tts_params[key] = value
+
         # Call TTS service
         audio_path = await multifunc_video.tts(**tts_params)
         
