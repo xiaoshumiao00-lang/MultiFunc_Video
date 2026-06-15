@@ -262,8 +262,8 @@
         "251",
         4
       ],
-      "frame_window_size": 21,
-      "motion_frame": 10,
+      "frame_window_size": 31,
+      "motion_frame": 21,
       "force_offload": false,
       "colormatch": "mkl",
       "tiled_vae": false,
