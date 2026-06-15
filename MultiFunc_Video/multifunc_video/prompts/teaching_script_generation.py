@@ -106,3 +106,49 @@ def build_slide_segment_prompt(full_script: str, slides: List[dict]) -> str:
 4. 只输出 JSON，不要任何解释。"""
 
     return prompt
+
+
+def build_free_segment_prompt(full_script: str, slides: List[dict]) -> str:
+    """
+    Build a prompt that splits the full script into time-bounded segments
+    with flexible slide mapping. A segment may span multiple slides, and
+    a slide may be covered by multiple consecutive segments.
+
+    Args:
+        full_script: The complete narration script
+        slides: List of slide dicts
+
+    Returns:
+        Prompt string
+    """
+    slides_text = "\n".join([
+        f"第 {s.get('index', 0) + 1} 页：{s.get('title', '') or s.get('text', '')[:80]}"
+        for s in slides
+    ])
+
+    prompt = f"""请将以下完整口播文案切分为若干片段，用于后续配音和数字人视频生成。
+
+课件页概览（共 {len(slides)} 页）：
+{slides_text}
+
+完整口播文案：
+{full_script}
+
+请严格按以下 JSON 格式输出，不要包含其他内容：
+{{
+  "segments": [
+    {{"text": "...", "slide_start": 0, "slide_end": 0}},
+    {{"text": "...", "slide_start": 0, "slide_end": 1}}
+  ]
+}}
+
+要求：
+1. 每个片段在中文正常语速下约 10 秒，绝对不要超过 15 秒。
+2. 必须在标点符号或语义完整处切断，不要切断词语或句子。
+3. 每个片段标注对应的 PPT 起始页和结束页（slide_start 和 slide_end 均从 0 开始，包含）。
+4. 允许一个片段跨多页，也允许多个连续片段属于同一页。
+5. 所有片段的 text 拼接后应等于完整口播文案（允许极少量连接词差异）。
+6. 优先在课件页切换的过渡语附近（如"我们来看下一页"、"总结一下"）进行切分。
+7. 只输出 JSON，不要任何解释、标题或 Markdown 代码块。"""
+
+    return prompt
