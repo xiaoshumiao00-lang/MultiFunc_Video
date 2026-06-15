@@ -51,6 +51,40 @@ def main():
     # Render header (title + language selector)
     render_header()
     
+    # One-click GPU memory cleanup
+    if st.button(tr("btn.clear_gpu_memory"), key="clear_gpu_memory_btn", use_container_width=False):
+        try:
+            from web.utils.gpu_cleanup import clear_gpu_memory
+            from multifunc_video.config import config_manager
+            
+            comfyui_config = config_manager.get_comfyui_config()
+            llm_config = config_manager.get_llm_config()
+            
+            # Detect Ollama endpoint from LLM base URL (default port 11434)
+            llm_base_url = str(llm_config.get("base_url") or "")
+            ollama_url = llm_base_url if "11434" in llm_base_url else None
+            
+            with st.spinner(tr("status.clearing_gpu_memory")):
+                summary = clear_gpu_memory(
+                    comfyui_url=comfyui_config.get("comfyui_url"),
+                    comfyui_api_key=comfyui_config.get("comfyui_api_key"),
+                    ollama_base_url=ollama_url,
+                )
+            
+            if summary["overall"] == "success":
+                st.success(tr("status.gpu_memory_cleared"))
+            elif summary["overall"] == "partial":
+                st.warning(tr("status.gpu_memory_partial"))
+            else:
+                st.error(tr("status.gpu_memory_failed"))
+            
+            with st.expander(tr("status.gpu_memory_details")):
+                for result in summary["results"]:
+                    icon = "✅" if result["success"] else "⚠️"
+                    st.write(f"{icon} **{result['source']}**: {result['message']}")
+        except Exception as e:
+            st.error(f"{tr('status.gpu_memory_failed')}: {e}")
+    
     # Render FAQ in sidebar
     render_faq_sidebar()
     
