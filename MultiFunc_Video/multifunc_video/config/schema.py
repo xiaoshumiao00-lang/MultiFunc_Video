@@ -37,11 +37,28 @@ class TTSComfyUIConfig(BaseModel):
     default_workflow: Optional[str] = Field(default=None, description="Default TTS workflow (optional)")
 
 
+class TTSSoVITSConfig(BaseModel):
+    """GPT-SoVITS TTS configuration"""
+    project_path: str = Field(
+        default=r"D:\陈潘HBEU\Desktop\本地生成视频\GPT-SoVITS-1007-cu124\GPT-SoVITS-1007-cu124",
+        description="GPT-SoVITS project root path"
+    )
+    api_url: str = Field(default="http://127.0.0.1:9880", description="GPT-SoVITS API URL")
+    text_lang: str = Field(default="zh", description="Default text language for synthesis")
+    prompt_lang: str = Field(default="zh", description="Default reference audio language")
+    top_k: int = Field(default=15, ge=1, le=100, description="Top-K sampling parameter")
+    top_p: float = Field(default=1.0, ge=0.0, le=1.0, description="Top-P sampling parameter")
+    temperature: float = Field(default=1.0, ge=0.0, le=2.0, description="Sampling temperature")
+    speed_factor: float = Field(default=1.0, ge=0.5, le=2.0, description="Speech speed multiplier")
+    default_ref_audio: str = Field(default="", description="Default reference audio path")
+
+
 class TTSSubConfig(BaseModel):
     """TTS-specific configuration (under comfyui.tts)"""
-    inference_mode: str = Field(default="local", description="TTS inference mode: 'local' or 'comfyui'")
+    inference_mode: str = Field(default="local", description="TTS inference mode: 'local', 'comfyui', or 'gpt_sovits'")
     local: TTSLocalConfig = Field(default_factory=TTSLocalConfig, description="Local TTS (Edge TTS) configuration")
     comfyui: TTSComfyUIConfig = Field(default_factory=TTSComfyUIConfig, description="ComfyUI TTS configuration")
+    gpt_sovits: TTSSoVITSConfig = Field(default_factory=TTSSoVITSConfig, description="GPT-SoVITS TTS configuration")
     
     # Backward compatibility: keep default_workflow at top level
     @property

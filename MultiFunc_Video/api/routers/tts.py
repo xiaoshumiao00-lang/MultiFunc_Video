@@ -64,6 +64,10 @@ async def tts_synthesize(
         # Build TTS parameters
         tts_params = {"text": request.text}
         
+        # Add inference_mode if specified
+        if request.inference_mode:
+            tts_params["inference_mode"] = request.inference_mode
+        
         # Add workflow if specified
         if request.workflow:
             tts_params["workflow"] = request.workflow
@@ -76,6 +80,19 @@ async def tts_synthesize(
         if request.voice_id and not request.workflow:
             logger.warning("voice_id parameter is deprecated, please use workflow instead")
             tts_params["voice"] = request.voice_id
+        
+        # GPT-SoVITS parameters
+        sovits_fields = {
+            "gpt_sovits_project_path": request.gpt_sovits_project_path,
+            "gpt_sovits_api_url": request.gpt_sovits_api_url,
+            "gpt_sovits_ref_audio": request.gpt_sovits_ref_audio,
+            "gpt_sovits_prompt_text": request.gpt_sovits_prompt_text,
+            "gpt_sovits_prompt_lang": request.gpt_sovits_prompt_lang,
+            "gpt_sovits_text_lang": request.gpt_sovits_text_lang,
+        }
+        for key, value in sovits_fields.items():
+            if value is not None:
+                tts_params[key] = value
         
         # Call TTS service
         audio_path = await multifunc_video.tts(**tts_params)

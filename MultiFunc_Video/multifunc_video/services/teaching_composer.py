@@ -23,6 +23,7 @@ Orchestrates:
 
 import os
 import json
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
@@ -99,6 +100,13 @@ class TeachingCompositionParams:
     tts_speed: Optional[float] = None
     tts_workflow: Optional[str] = None
     ref_audio: Optional[str] = None
+    # GPT-SoVITS TTS parameters
+    gpt_sovits_project_path: Optional[str] = None
+    gpt_sovits_api_url: Optional[str] = None
+    gpt_sovits_ref_audio: Optional[str] = None
+    gpt_sovits_prompt_text: str = ""
+    gpt_sovits_prompt_lang: str = "zh"
+    gpt_sovits_text_lang: str = "zh"
     # Final output audio volume multiplier (1.0 = original, >1 louder, <1 quieter)
     audio_volume: float = 1.0
 
@@ -162,6 +170,16 @@ class TeachingComposer:
         report(3, "分段并对齐课件页...")
         segments = await self._split_script_into_segments(full_script, slides)
         logger.info(f"文案已分为 {len(segments)} 个片段")
+        self._save_debug_json(params.task_dir, "segments.json", [
+            {
+                "text": seg.text,
+                "slide_start": seg.slide_start,
+                "slide_end": seg.slide_end,
+                "audio_path": seg.audio_path,
+                "duration": seg.duration,
+            }
+            for seg in segments
+        ])
 
         # Duration mode check
         if params.duration_mode == "fixed" and params.target_duration > 0:
@@ -185,6 +203,11 @@ class TeachingComposer:
         slide_durations = self._compute_slide_durations(segments, len(slides))
         for i, d in enumerate(slide_durations):
             logger.debug(f"Slide {i} duration: {d:.2f}s")
+        self._save_debug_json(params.task_dir, "slide_durations.json", {
+            "slide_count": len(slides),
+            "total_duration": total_duration,
+            "durations": slide_durations,
+        })
 
         # Step 6: Create background video from slides
         report(6, "生成课件背景视频...")
@@ -319,14 +342,22 @@ class TeachingComposer:
         text: str,
         output_path: str,
         params: TeachingCompositionParams,
-        speed_override: Optional[float] = None
-    ):
-        """Generate TTS audio"""
+        speed_override: Optional[float] = None,
+        auto_shutdown: Optional[bool] = None,
+    ) -> str:
+        """Generate TTS audio and return the actual output path.
+
+        The returned path may differ from ``output_path`` when the TTS backend
+        enforces a specific extension (e.g. GPT-SoVITS always outputs ``.wav``).
+        """
         tts_kwargs = {
             "text": text,
             "output_path": output_path,
             "inference_mode": params.tts_inference_mode
         }
+
+        if auto_shutdown is not None:
+            tts_kwargs["auto_shutdown"] = auto_shutdown
 
         if params.tts_inference_mode == "local":
             tts_kwargs["voice"] = params.tts_voice
@@ -336,8 +367,23 @@ class TeachingComposer:
                 tts_kwargs["workflow"] = params.tts_workflow
             if params.ref_audio:
                 tts_kwargs["ref_audio"] = params.ref_audio
+        elif params.tts_inference_mode == "gpt_sovits":
+            tts_kwargs["speed"] = speed_override if speed_override is not None else params.tts_speed
+            if hasattr(params, "gpt_sovits_project_path") and params.gpt_sovits_project_path:
+                tts_kwargs["gpt_sovits_project_path"] = params.gpt_sovits_project_path
+            if hasattr(params, "gpt_sovits_api_url") and params.gpt_sovits_api_url:
+                tts_kwargs["gpt_sovits_api_url"] = params.gpt_sovits_api_url
+            if hasattr(params, "gpt_sovits_ref_audio") and params.gpt_sovits_ref_audio:
+                tts_kwargs["gpt_sovits_ref_audio"] = params.gpt_sovits_ref_audio
+            if hasattr(params, "gpt_sovits_prompt_text"):
+                tts_kwargs["gpt_sovits_prompt_text"] = params.gpt_sovits_prompt_text
+            if hasattr(params, "gpt_sovits_prompt_lang"):
+                tts_kwargs["gpt_sovits_prompt_lang"] = params.gpt_sovits_prompt_lang
+            if hasattr(params, "gpt_sovits_text_lang"):
+                tts_kwargs["gpt_sovits_text_lang"] = params.gpt_sovits_text_lang
 
-        await self.multifunc_video.tts(**tts_kwargs)
+        actual_path = await self.multifunc_video.tts(**tts_kwargs)
+        return actual_path or output_path
 
     async def _generate_segment_audios(
         self,
@@ -361,51 +407,93 @@ class TeachingComposer:
 
         result: List[Segment] = []
 
-        for i, seg in enumerate(segments):
-            seg_audio_path = os.path.join(params.task_dir, f"segment_{depth}_{i:03d}.mp3")
-            await self._generate_audio(seg.text, seg_audio_path, params)
-            duration = self._get_audio_duration(seg_audio_path)
+        # For GPT-SoVITS, keep the API alive across all segments to avoid
+        # reloading models for every sentence.
+        api_started = False
+        gpt_sovits_api_url = None
+        if params.tts_inference_mode == "gpt_sovits" and depth == 0:
+            gpt_sovits_api_url = (
+                params.gpt_sovits_api_url
+                if hasattr(params, "gpt_sovits_api_url") else None
+            )
+            gpt_sovits_project_path = (
+                params.gpt_sovits_project_path
+                if hasattr(params, "gpt_sovits_project_path") else None
+            )
+            logger.info("为 GPT-SoVITS 批量合成预热 API...")
+            api_started = await self.multifunc_video.tts.start_gpt_sovits_api(
+                project_path=gpt_sovits_project_path,
+                api_url=gpt_sovits_api_url,
+            )
+            logger.info("GPT-SoVITS API 预热完成")
 
-            if duration > max_duration:
-                logger.warning(
-                    f"片段 {i} 音频时长 {duration:.2f}s 超过 {max_duration}s，重新切分"
+        tts_auto_shutdown = (
+            False if params.tts_inference_mode == "gpt_sovits" else None
+        )
+
+        try:
+            for i, seg in enumerate(segments):
+                # Small pause between GPT-SoVITS calls to let GPU settle
+                if i > 0 and params.tts_inference_mode == "gpt_sovits":
+                    await asyncio.sleep(1.5)
+
+                seg_audio_path = os.path.join(params.task_dir, f"segment_{depth}_{i:03d}.mp3")
+                actual_audio_path = await self._generate_audio(
+                    seg.text, seg_audio_path, params, auto_shutdown=tts_auto_shutdown
                 )
-                slide_dicts = [{"index": s.index, "title": s.title, "text": s.text} for s in slides]
-                sub_prompt = build_free_segment_prompt(seg.text, slide_dicts)
-                sub_prompt += f"\n\n注意：该片段过长，请将其切分为每个不超过 {max_duration} 秒的子片段。"
+                mp3_audio_path = self._ensure_mp3(actual_audio_path, seg_audio_path)
+                duration = self._get_audio_duration(mp3_audio_path)
 
-                try:
-                    sub_response = await self.llm_service(
-                        prompt=sub_prompt,
-                        temperature=0.2,
-                        max_tokens=4000,
-                        response_type=SegmentSplitResponse
+                if duration > max_duration:
+                    logger.warning(
+                        f"片段 {i} 音频时长 {duration:.2f}s 超过 {max_duration}s，重新切分"
                     )
-                    sub_segments = sub_response.segments
+                    slide_dicts = [{"index": s.index, "title": s.title, "text": s.text} for s in slides]
+                    sub_prompt = build_free_segment_prompt(seg.text, slide_dicts)
+                    sub_prompt += f"\n\n注意：该片段过长，请将其切分为每个不超过 {max_duration} 秒的子片段。"
+
+                    try:
+                        sub_response = await self.llm_service(
+                            prompt=sub_prompt,
+                            temperature=0.2,
+                            max_tokens=4000,
+                            response_type=SegmentSplitResponse
+                        )
+                        sub_segments = sub_response.segments
+                    except Exception as e:
+                        raise RuntimeError(f"片段 {i} 重新切分失败: {e}")
+
+                    sub_segments = self._normalize_segments(sub_segments, seg.text, len(slides))
+
+                    # Clamp sub-segment slide ranges to parent segment's range
+                    for sub in sub_segments:
+                        sub.slide_start = max(sub.slide_start, seg.slide_start)
+                        sub.slide_end = min(sub.slide_end, seg.slide_end)
+                        if sub.slide_end < sub.slide_start:
+                            sub.slide_end = sub.slide_start
+
+                    processed_subs = await self._generate_segment_audios(
+                        sub_segments, slides, params, max_duration, depth=depth + 1
+                    )
+                    result.extend(processed_subs)
+                else:
+                    result.append(Segment(
+                        text=seg.text,
+                        slide_start=seg.slide_start,
+                        slide_end=seg.slide_end,
+                        audio_path=mp3_audio_path,
+                        duration=duration
+                    ))
+
+        finally:
+            if api_started and params.tts_inference_mode == "gpt_sovits" and depth == 0:
+                logger.info("关闭 GPT-SoVITS API 释放显存...")
+                try:
+                    await self.multifunc_video.tts.stop_gpt_sovits_api(
+                        api_url=gpt_sovits_api_url
+                    )
                 except Exception as e:
-                    raise RuntimeError(f"片段 {i} 重新切分失败: {e}")
-
-                sub_segments = self._normalize_segments(sub_segments, seg.text, len(slides))
-
-                # Clamp sub-segment slide ranges to parent segment's range
-                for sub in sub_segments:
-                    sub.slide_start = max(sub.slide_start, seg.slide_start)
-                    sub.slide_end = min(sub.slide_end, seg.slide_end)
-                    if sub.slide_end < sub.slide_start:
-                        sub.slide_end = sub.slide_start
-
-                processed_subs = await self._generate_segment_audios(
-                    sub_segments, slides, params, max_duration, depth=depth + 1
-                )
-                result.extend(processed_subs)
-            else:
-                result.append(Segment(
-                    text=seg.text,
-                    slide_start=seg.slide_start,
-                    slide_end=seg.slide_end,
-                    audio_path=seg_audio_path,
-                    duration=duration
-                ))
+                    logger.warning(f"关闭 GPT-SoVITS API 失败: {e}")
 
         return result
 
@@ -445,6 +533,47 @@ class TeachingComposer:
             logger.warning(f"获取音频时长失败: {e}")
             return 0.0
 
+    def _ensure_mp3(self, audio_path: str, mp3_path: str) -> str:
+        """Convert an audio file to MP3 if it is not already MP3.
+
+        Args:
+            audio_path: Path to the source audio file.
+            mp3_path: Desired output MP3 path.
+
+        Returns:
+            Path to the MP3 file (``mp3_path``).
+        """
+        if audio_path.lower().endswith(".mp3"):
+            if audio_path != mp3_path and not os.path.exists(mp3_path):
+                shutil.copy(audio_path, mp3_path)
+            return mp3_path if os.path.exists(mp3_path) else audio_path
+
+        ensure_dir(os.path.dirname(mp3_path))
+        try:
+            (
+                ffmpeg
+                .input(audio_path)
+                .output(mp3_path, acodec="libmp3lame", **{"b:a": "128k"})
+                .overwrite_output()
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+            logger.info(f"已将音频转码为 MP3: {mp3_path}")
+            return mp3_path
+        except ffmpeg.Error as e:
+            error_msg = e.stderr.decode() if e.stderr else str(e)
+            logger.error(f"音频转码为 MP3 失败: {error_msg}")
+            raise RuntimeError(f"音频转码为 MP3 失败: {error_msg}")
+
+    def _save_debug_json(self, task_dir: str, filename: str, data: Any):
+        """Save debug JSON to task directory for offline diagnosis."""
+        debug_path = os.path.join(task_dir, filename)
+        try:
+            ensure_dir(task_dir)
+            with open(debug_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        except Exception as e:
+            logger.warning(f"保存调试文件 {filename} 失败: {e}")
+
     def _compute_slide_durations(
         self,
         segments: List[Segment],
@@ -479,6 +608,20 @@ class TeachingComposer:
         slide_durations = [
             (weight / total_weight) * total_duration for weight in slide_weights
         ]
+
+        # Defensive: ensure every slide gets a positive duration.
+        # LLM segment mapping may miss a slide, which would otherwise get 0s
+        # and cause the ffmpeg concat demuxer to fail.
+        for i in range(num_slides):
+            if slide_durations[i] <= 0:
+                logger.warning(f"第 {i} 页课件未匹配到任何片段，强制分配基础时长")
+                slide_durations[i] = total_duration / num_slides
+
+        # Renormalize so the sum still equals total_duration
+        current_sum = sum(slide_durations)
+        if current_sum > 0 and abs(current_sum - total_duration) > 0.001:
+            scale = total_duration / current_sum
+            slide_durations = [d * scale for d in slide_durations]
 
         min_duration = 1.5
         self._enforce_min_duration(slide_durations, total_duration, min_duration)
@@ -600,24 +743,38 @@ class TeachingComposer:
 
         for i, seg in enumerate(segments):
             seg_output_path = os.path.join(params.task_dir, f"human_segment_{i:03d}.mp4")
-            logger.info(f"生成数字人片段 {i+1}/{len(segments)}，时长 {seg.duration:.2f}s")
-
-            await self._generate_single_human_video(
-                params=params,
-                start_image=start_image,
-                audio_path=seg.audio_path,
-                output_path=seg_output_path
+            logger.info(
+                f"[数字人链式生成] 片段 {i+1}/{len(segments)}，"
+                f"时长 {seg.duration:.2f}s，音频 {seg.audio_path}，起始图 {start_image}"
             )
+
+            try:
+                await self._generate_single_human_video(
+                    params=params,
+                    start_image=start_image,
+                    audio_path=seg.audio_path,
+                    output_path=seg_output_path
+                )
+            except Exception as e:
+                logger.error(f"[数字人链式生成] 片段 {i+1}/{len(segments)} 生成失败: {e}")
+                raise RuntimeError(
+                    f"数字人片段 {i+1}/{len(segments)} 生成失败: {e}"
+                ) from e
+
+            logger.info(f"[数字人链式生成] 片段 {i+1}/{len(segments)} 完成: {seg_output_path}")
             segment_video_paths.append(seg_output_path)
 
             # Extract last frame for next segment's start image
             if i < len(segments) - 1:
                 last_frame_path = os.path.join(params.task_dir, f"human_segment_{i:03d}_last_frame.jpg")
+                logger.info(f"[数字人链式生成] 提取片段 {i+1} 尾帧作为下一片段起始图: {last_frame_path}")
                 self._extract_last_frame(seg_output_path, last_frame_path)
                 start_image = last_frame_path
 
         full_human_path = os.path.join(params.task_dir, "human_full.mp4")
+        logger.info(f"[数字人链式生成] 拼接 {len(segment_video_paths)} 个片段为完整数字人视频")
         self._concat_videos(segment_video_paths, full_human_path)
+        logger.info(f"[数字人链式生成] 完整数字人视频: {full_human_path}")
         return full_human_path
 
     async def _generate_single_human_video(
@@ -665,10 +822,29 @@ class TeachingComposer:
         )
         logger.info(f"工作流输入参数: videoimage={start_image}, audio={audio_path}")
 
-        result = await kit.execute(workflow_input, workflow_params)
-
         try:
-            result_debug_path = os.path.join(params.task_dir, f"human_workflow_result_{Path(output_path).stem}.json")
+            result = await kit.execute(workflow_input, workflow_params)
+        except Exception as execute_err:
+            logger.exception(f"数字人工作流 kit.execute 调用异常: {execute_err}")
+            # Persist the raw exception info for offline diagnosis
+            error_debug_path = os.path.join(params.task_dir, f"human_workflow_error_{Path(output_path).stem}.json")
+            try:
+                with open(error_debug_path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "error": str(execute_err),
+                        "error_type": type(execute_err).__name__,
+                        "workflow_input": workflow_input,
+                        "workflow_params": workflow_params,
+                    }, f, ensure_ascii=False, indent=2, default=str)
+                logger.info(f"工作流异常调试信息已保存: {error_debug_path}")
+            except Exception as dump_err:
+                logger.warning(f"保存工作流异常调试文件失败: {dump_err}")
+            raise RuntimeError(
+                f"调用数字人工作流失败: {execute_err}"
+            ) from execute_err
+
+        result_debug_path = os.path.join(params.task_dir, f"human_workflow_result_{Path(output_path).stem}.json")
+        try:
             with open(result_debug_path, "w", encoding="utf-8") as f:
                 json.dump(result.model_dump() if hasattr(result, "model_dump") else dict(result), f, ensure_ascii=False, indent=2, default=str)
             logger.info(f"工作流执行结果已保存: {result_debug_path}")

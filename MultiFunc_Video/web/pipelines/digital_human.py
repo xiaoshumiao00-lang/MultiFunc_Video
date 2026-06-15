@@ -402,6 +402,23 @@ class DigitalHumanPipelineUI(PipelineUI):
                                     tts_kwargs["workflow"] = tts_workflow
                                 if ref_audio:
                                     tts_kwargs["ref_audio"] = ref_audio
+                            elif tts_inference_mode == "gpt_sovits":
+                                tts_kwargs["speed"] = tts_speed
+                                sovits_project_path = video_params.get("gpt_sovits_project_path")
+                                sovits_api_url = video_params.get("gpt_sovits_api_url")
+                                sovits_ref_audio = video_params.get("gpt_sovits_ref_audio")
+                                sovits_prompt_text = video_params.get("gpt_sovits_prompt_text", "")
+                                sovits_prompt_lang = video_params.get("gpt_sovits_prompt_lang", "zh")
+                                sovits_text_lang = video_params.get("gpt_sovits_text_lang", "zh")
+                                if sovits_project_path:
+                                    tts_kwargs["gpt_sovits_project_path"] = sovits_project_path
+                                if sovits_api_url:
+                                    tts_kwargs["gpt_sovits_api_url"] = sovits_api_url
+                                if sovits_ref_audio:
+                                    tts_kwargs["gpt_sovits_ref_audio"] = sovits_ref_audio
+                                tts_kwargs["gpt_sovits_prompt_text"] = sovits_prompt_text
+                                tts_kwargs["gpt_sovits_prompt_lang"] = sovits_prompt_lang
+                                tts_kwargs["gpt_sovits_text_lang"] = sovits_text_lang
 
                             await multifunc_video.tts(**tts_kwargs)
                             progress_bar.progress(65)

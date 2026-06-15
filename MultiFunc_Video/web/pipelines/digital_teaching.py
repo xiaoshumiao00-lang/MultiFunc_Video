@@ -338,6 +338,12 @@ class DigitalTeachingPipelineUI(PipelineUI):
                             tts_workflow=video_params.get("tts_workflow"),
                             ref_audio=video_params.get("ref_audio"),
                             audio_volume=video_params.get("audio_volume", 1.0),
+                            gpt_sovits_project_path=video_params.get("gpt_sovits_project_path"),
+                            gpt_sovits_api_url=video_params.get("gpt_sovits_api_url"),
+                            gpt_sovits_ref_audio=video_params.get("gpt_sovits_ref_audio"),
+                            gpt_sovits_prompt_text=video_params.get("gpt_sovits_prompt_text", ""),
+                            gpt_sovits_prompt_lang=video_params.get("gpt_sovits_prompt_lang", "zh"),
+                            gpt_sovits_text_lang=video_params.get("gpt_sovits_text_lang", "zh"),
                         )
                         
                         llm_service = LLMService(config_manager.get_llm_config())
@@ -379,9 +385,14 @@ class DigitalTeachingPipelineUI(PipelineUI):
                         st.error(tr("status.video_not_found", path=final_video_path))
                 
                 except Exception as e:
+                    import traceback
                     status_text.text("")
                     progress_bar.empty()
-                    st.error(tr("status.error", error=str(e)))
+                    error_detail = f"{type(e).__name__}: {e}"
+                    tb_text = traceback.format_exc()
+                    st.error(tr("status.error", error=error_detail))
+                    with st.expander("🔍 查看详细错误信息（请复制给技术支持）", expanded=True):
+                        st.code(tb_text, language="text")
                     logger.exception(e)
                     st.stop()
 

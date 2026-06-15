@@ -61,8 +61,8 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
         tts_mode = cached_radio(
             tr("tts.inference_mode"),
             key=f"{key_prefix}_tts_inference_mode",
-            options=["local", "comfyui"],
-            index=0 if tts_config.get("inference_mode", "local") == "local" else 1,
+            options=["local", "comfyui", "gpt_sovits"],
+            index=["local", "comfyui", "gpt_sovits"].index(tts_config.get("inference_mode", "local")),
             horizontal=True,
             format_func=lambda x: tr(f"tts.mode.{x}")
         )
@@ -70,8 +70,10 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
         # Show hint based on mode
         if tts_mode == "local":
             st.caption(tr("tts.mode.local_hint"))
-        else:
+        elif tts_mode == "comfyui":
             st.caption(tr("tts.mode.comfyui_hint"))
+        else:
+            st.caption(tr("tts.mode.gpt_sovits_hint"))
         
         # ================================================================
         # Local Mode UI
@@ -132,11 +134,18 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
             # Variables for video generation
             tts_workflow_key = None
             ref_audio_path = None
+            # GPT-SoVITS variables (not used in this mode)
+            sovits_project_path = ""
+            sovits_api_url = "http://127.0.0.1:9880"
+            sovits_ref_audio_path = None
+            sovits_prompt_text = ""
+            sovits_prompt_lang = "zh"
+            sovits_text_lang = "zh"
         
         # ================================================================
         # ComfyUI Mode UI
         # ================================================================
-        else:  # comfyui mode
+        elif tts_mode == "comfyui":
             # Workflow source selection (runninghub / selfhost)
             source_options = {
                 "runninghub": tr("asset_based.source.runninghub"),
@@ -233,9 +242,183 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
             # Variables for video generation
             selected_voice = None
             tts_speed = None
+            # GPT-SoVITS variables (not used in this mode)
+            sovits_project_path = ""
+            sovits_api_url = "http://127.0.0.1:9880"
+            sovits_ref_audio_path = None
+            sovits_prompt_text = ""
+            sovits_prompt_lang = "zh"
+            sovits_text_lang = "zh"
         
         # ================================================================
-        # TTS Preview (works for both modes)
+        # GPT-SoVITS Mode UI
+        # ================================================================
+        elif tts_mode == "gpt_sovits":
+            sovits_config = tts_config.get("gpt_sovits", {})
+            
+            # Auto-start hint
+            st.info(tr("tts.sovits.auto_start_hint"))
+            
+            # ---- Project path with folder browser ----
+            saved_project_path = sovits_config.get("project_path", "")
+            project_path_key = f"{key_prefix}_sovits_project_path"
+            sovits_project_path = cached_text_input(
+                tr("tts.sovits.project_path"),
+                key=project_path_key,
+                default=saved_project_path,
+                help=tr("tts.sovits.project_path_help")
+            )
+            
+            # Folder browser
+            with st.expander("📁 " + tr("tts.sovits.browse_folder")):
+                browser_dir_key = f"{key_prefix}_sovits_browser_dir"
+                # Initialize browser dir to project path parent or D:/
+                if browser_dir_key not in st.session_state:
+                    if sovits_project_path and os.path.isdir(sovits_project_path):
+                        st.session_state[browser_dir_key] = sovits_project_path
+                    else:
+                        st.session_state[browser_dir_key] = "D:/"
+                
+                current_browser_dir = st.session_state[browser_dir_key]
+                st.code(current_browser_dir, language=None)
+                
+                # Navigation buttons
+                fb_col1, fb_col2 = st.columns(2)
+                with fb_col1:
+                    parent_dir = str(Path(current_browser_dir).parent)
+                    if parent_dir != current_browser_dir and os.path.isdir(parent_dir):
+                        if st.button("⬆️ " + tr("tts.sovits.parent_dir"), key=f"{key_prefix}_sovits_up", use_container_width=True):
+                            st.session_state[browser_dir_key] = parent_dir
+                            st.rerun()
+                with fb_col2:
+                    if st.button("✅ " + tr("tts.sovits.select_this_folder"), key=f"{key_prefix}_sovits_pick_dir", type="primary", use_container_width=True):
+                        from web.state.cache import set as cache_set
+                        cache_set(project_path_key, current_browser_dir)
+                        st.rerun()
+                
+                # List subdirectories as selectbox
+                try:
+                    entries = sorted(os.listdir(current_browser_dir))
+                    dirs = [d for d in entries if os.path.isdir(os.path.join(current_browser_dir, d)) and not d.startswith('.')]
+                    
+                    if dirs:
+                        selected_subdir = st.selectbox(
+                            tr("tts.sovits.subdirectories"),
+                            options=dirs,
+                            key=f"{key_prefix}_sovits_dir_select"
+                        )
+                        if st.button("📂 " + tr("tts.sovits.enter_directory"), key=f"{key_prefix}_sovits_enter_dir", use_container_width=True):
+                            st.session_state[browser_dir_key] = os.path.join(current_browser_dir, selected_subdir)
+                            st.rerun()
+                    else:
+                        st.caption(tr("tts.sovits.no_subdirectories"))
+                except (PermissionError, OSError) as e:
+                    st.error(f"❌ {e}")
+            
+            # ---- API URL ----
+            saved_api_url = sovits_config.get("api_url", "http://127.0.0.1:9880")
+            sovits_api_url = cached_text_input(
+                tr("tts.sovits.api_url"),
+                key=f"{key_prefix}_sovits_api_url",
+                default=saved_api_url,
+                help=tr("tts.sovits.api_url_help")
+            )
+            
+            # ---- Reference audio (file_uploader, same as PPT/PDF upload) ----
+            sovits_ref_audio_upload_key = f"{key_prefix}_sovits_ref_audio_upload"
+            sovits_ref_audio_file = st.file_uploader(
+                tr("tts.sovits.ref_audio"),
+                type=["mp3", "wav", "flac", "m4a", "aac", "ogg"],
+                help=tr("tts.sovits.ref_audio_help"),
+                key=sovits_ref_audio_upload_key
+            )
+
+            # Persist uploaded reference audio and restore cached files on restart
+            sovits_ref_audio_path = None
+            if sovits_ref_audio_file is not None:
+                # Audio preview player
+                st.audio(sovits_ref_audio_file)
+
+                # Save to persistent cache
+                cached_paths = cache_uploaded_files(
+                    sovits_ref_audio_upload_key,
+                    sovits_ref_audio_file if isinstance(sovits_ref_audio_file, list) else [sovits_ref_audio_file]
+                )
+                if cached_paths:
+                    sovits_ref_audio_path = Path(cached_paths[0])
+            else:
+                cached_paths = get_cached_file_paths(sovits_ref_audio_upload_key)
+                if cached_paths:
+                    sovits_ref_audio_path = Path(cached_paths[0])
+                    st.info(f"🔊 {tr('cache.using_cached_ref_audio')}: {sovits_ref_audio_path.name}")
+                    st.audio(str(sovits_ref_audio_path))
+                    if st.button(tr("cache.clear_ref_audio"), key=f"clear_{sovits_ref_audio_upload_key}"):
+                        clear_cached_files(sovits_ref_audio_upload_key)
+                        st.rerun()
+            
+            # ---- Reference audio text and language (two columns) ----
+            lang_col1, lang_col2 = st.columns([1, 1])
+            
+            with lang_col1:
+                sovits_prompt_text = cached_text_input(
+                    tr("tts.sovits.prompt_text"),
+                    key=f"{key_prefix}_sovits_prompt_text",
+                    default="",
+                    help=tr("tts.sovits.prompt_text_help")
+                )
+            
+            with lang_col2:
+                lang_options = {
+                    "zh": "中文",
+                    "en": "英文",
+                    "ja": "日文",
+                    "ko": "韩文",
+                    "yue": "粤语",
+                    "auto": "自动检测",
+                }
+                saved_prompt_lang = sovits_config.get("prompt_lang", "zh")
+                sovits_prompt_lang = cached_selectbox(
+                    tr("tts.sovits.prompt_lang"),
+                    key=f"{key_prefix}_sovits_prompt_lang",
+                    options=list(lang_options.keys()),
+                    format_func=lambda x: lang_options[x],
+                    index=list(lang_options.keys()).index(
+                        saved_prompt_lang if saved_prompt_lang in lang_options else "zh"
+                    ),
+                )
+                
+                # Synthesis language
+                saved_text_lang = sovits_config.get("text_lang", "zh")
+                sovits_text_lang = cached_selectbox(
+                    tr("tts.sovits.text_lang"),
+                    key=f"{key_prefix}_sovits_text_lang",
+                    options=list(lang_options.keys()),
+                    format_func=lambda x: lang_options[x],
+                    index=list(lang_options.keys()).index(
+                        saved_text_lang if saved_text_lang in lang_options else "zh"
+                    ),
+                )
+            
+            # Speed slider
+            saved_speed = sovits_config.get("speed_factor", 1.0)
+            tts_speed = cached_slider(
+                tr("tts.speed"),
+                key=f"{key_prefix}_sovits_speed",
+                min_value=0.5,
+                max_value=2.0,
+                value=saved_speed,
+                step=0.1,
+                format="%.1fx"
+            )
+            st.caption(tr("tts.speed_label", speed=f"{tts_speed:.1f}"))
+            
+            # Variables for video generation
+            selected_voice = None
+            tts_workflow_key = None
+            ref_audio_path = None  # Not used for sovits mode
+        
+        # ================================================================
+        # TTS Preview (works for all modes)
         # ================================================================
         with st.expander(tr("tts.preview_title"), expanded=False):
             # Preview text input
@@ -259,10 +442,19 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
                         if tts_mode == "local":
                             tts_params["voice"] = selected_voice
                             tts_params["speed"] = tts_speed
-                        else:  # comfyui
+                        elif tts_mode == "comfyui":
                             tts_params["workflow"] = tts_workflow_key
                             if ref_audio_path:
                                 tts_params["ref_audio"] = str(ref_audio_path)
+                        elif tts_mode == "gpt_sovits":
+                            tts_params["speed"] = tts_speed
+                            tts_params["gpt_sovits_project_path"] = sovits_project_path
+                            tts_params["gpt_sovits_api_url"] = sovits_api_url
+                            if sovits_ref_audio_path:
+                                tts_params["gpt_sovits_ref_audio"] = str(sovits_ref_audio_path)
+                            tts_params["gpt_sovits_prompt_text"] = sovits_prompt_text
+                            tts_params["gpt_sovits_prompt_lang"] = sovits_prompt_lang
+                            tts_params["gpt_sovits_text_lang"] = sovits_text_lang
                         
                         audio_path = run_async(multifunc_video.tts(**tts_params))
                         
@@ -270,7 +462,10 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
                         if audio_path:
                             st.success(tr("tts.preview_success"))
                             if os.path.exists(audio_path):
-                                st.audio(audio_path, format="audio/mp3")
+                                # Determine audio format from file extension
+                                ext = os.path.splitext(audio_path)[1].lower()
+                                audio_format = "audio/wav" if ext == ".wav" else "audio/mp3"
+                                st.audio(audio_path, format=audio_format)
                             elif audio_path.startswith('http'):
                                 st.audio(audio_path)
                             else:
@@ -284,11 +479,24 @@ def render_style_config(multifunc_video, key_prefix: str = "digital"):
                         st.error(tr("tts.preview_failed", error=str(e)))
                         logger.exception(e)
     
-    # Return all style configuration parameters (Simplified version only local TTS)
-    return {
+    # Return all style configuration parameters
+    result = {
         "tts_inference_mode": tts_mode,
         "tts_voice": selected_voice if tts_mode == "local" else None,
-        "tts_speed": tts_speed if tts_mode == "local" else None,
+        "tts_speed": tts_speed if tts_mode in ("local", "gpt_sovits") else None,
         "tts_workflow": tts_workflow_key if tts_mode == "comfyui" else None,
         "ref_audio": str(ref_audio_path) if ref_audio_path else None,
     }
+    
+    # Add GPT-SoVITS specific parameters
+    if tts_mode == "gpt_sovits":
+        result.update({
+            "gpt_sovits_project_path": sovits_project_path,
+            "gpt_sovits_api_url": sovits_api_url,
+            "gpt_sovits_ref_audio": str(sovits_ref_audio_path) if sovits_ref_audio_path else None,
+            "gpt_sovits_prompt_text": sovits_prompt_text,
+            "gpt_sovits_prompt_lang": sovits_prompt_lang,
+            "gpt_sovits_text_lang": sovits_text_lang,
+        })
+    
+    return result
