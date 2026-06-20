@@ -117,6 +117,8 @@ class TeachingCompositionParams:
     qwen3_tts_language: Optional[str] = None
     # Final output audio volume multiplier (1.0 = original, >1 louder, <1 quieter)
     audio_volume: float = 1.0
+    # Whether to generate and overlay the digital human
+    show_digital_human: bool = True
 
 
 class TeachingComposer:
@@ -227,18 +229,30 @@ class TeachingComposer:
         )
 
         # Step 7: Generate digital human talking video segments with chained references
-        report(7, "链式生成数字人口型视频...")
-        human_video = await self._generate_human_video_segments(params, segments)
+        if params.show_digital_human:
+            report(7, "链式生成数字人口型视频...")
+            human_video = await self._generate_human_video_segments(params, segments)
+        else:
+            report(7, "已跳过数字人生成（用户选择不展示数字人）")
+            human_video = None
 
-        # Step 8: Overlay human onto background
+        # Step 8: Compose final video
         report(8, "合成最终教学视频...")
-        final_video = self._compose_final_video(
-            background_video=background_video,
-            human_video=human_video,
-            audio_path=full_audio_path,
-            params=params,
-            target_duration=total_duration
-        )
+        if params.show_digital_human:
+            final_video = self._compose_final_video(
+                background_video=background_video,
+                human_video=human_video,
+                audio_path=full_audio_path,
+                params=params,
+                target_duration=total_duration
+            )
+        else:
+            final_video = self._compose_background_with_audio(
+                background_video=background_video,
+                audio_path=full_audio_path,
+                params=params,
+                target_duration=total_duration
+            )
 
         logger.success(f"教学视频合成完成: {final_video}")
         return final_video
@@ -1140,6 +1154,55 @@ class TeachingComposer:
                 check=True
             )
 
+            return output_path
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else str(e)
+            logger.error(f"合成最终视频失败: {stderr}")
+            raise RuntimeError(f"合成最终视频失败: {stderr}")
+        except Exception as e:
+            logger.error(f"合成最终视频失败: {e}")
+            raise RuntimeError(f"合成最终视频失败: {e}")
+
+    def _compose_background_with_audio(
+        self,
+        background_video: str,
+        audio_path: str,
+        params: TeachingCompositionParams,
+        target_duration: float
+    ) -> str:
+        """Compose final video from slide background and narration audio only.
+
+        Used when ``show_digital_human`` is False. Skips ComfyUI digital-human
+        generation and overlays nothing onto the slides.
+        """
+        ensure_dir(params.task_dir)
+        output_path = os.path.join(params.task_dir, "final.mp4")
+
+        audio_volume = max(0.0, min(params.audio_volume, 5.0))
+        filter_complex = f"[1:a]volume={audio_volume}[aout]"
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", background_video,
+            "-i", audio_path,
+            "-filter_complex", filter_complex,
+            "-map", "0:v",
+            "-map", "[aout]",
+            "-t", str(target_duration),
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            output_path
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=False,
+                check=True
+            )
             return output_path
         except subprocess.CalledProcessError as e:
             stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else str(e)

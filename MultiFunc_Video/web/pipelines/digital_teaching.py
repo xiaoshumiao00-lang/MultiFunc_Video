@@ -12,6 +12,7 @@ from web.components.content_input import render_version_info
 from web.components.digital_tts_config import render_style_config
 from web.components.digital_teaching_config import render_teaching_config
 from web.state.cache import (
+    cached_checkbox,
     cached_radio,
     cached_text_area,
     cache_uploaded_files,
@@ -264,17 +265,31 @@ class DigitalTeachingPipelineUI(PipelineUI):
         """Render output preview and generation button"""
         with st.container(border=True):
             st.markdown(f"**{tr('section.video_generation')}**")
-            
+
             # Check configuration
             if not config_manager.validate():
                 st.warning(tr("settings.not_configured"))
-            
+
             character_assets = video_params.get("character_assets", [])
             teaching_file_path = video_params.get("teaching_file_path", "")
             teaching_script = video_params.get("teaching_script", "")
-            
+
+            # Digital human display toggle (placed right above the generate button)
+            with st.container(border=True):
+                st.markdown(f"**{tr('digital_teaching.section.digital_human_toggle')}**")
+                show_digital_human = cached_checkbox(
+                    tr("digital_teaching.show_digital_human"),
+                    key="teaching_show_digital_human",
+                    value=True,
+                    help=tr("digital_teaching.show_digital_human_help")
+                )
+                if not show_digital_human:
+                    st.info(tr("digital_teaching.no_human_hint"))
+
+            video_params["show_digital_human"] = show_digital_human
+
             # Validation
-            if not character_assets:
+            if show_digital_human and not character_assets:
                 st.info(tr("digital_teaching.character.warning"))
                 st.button(
                     tr("btn.generate"),
@@ -317,8 +332,9 @@ class DigitalTeachingPipelineUI(PipelineUI):
                         
                         # Build composition params
                         params = TeachingCompositionParams(
-                            character_image_path=character_assets[0],
+                            character_image_path=character_assets[0] if character_assets else "",
                             teaching_file_path=teaching_file_path,
+                            show_digital_human=video_params.get("show_digital_human", True),
                             task_dir=task_dir,
                             teaching_script=teaching_script,
                             human_scale=video_params.get("human_scale", 1/6),
