@@ -36,6 +36,30 @@ class ComfyUIAPI:
         except:
             return {}
 
+    def free_memory(self, unload_models: bool = True, free_memory: bool = True) -> Dict[str, Any]:
+        """
+        调用 ComfyUI /free 端点释放显存
+
+        Args:
+            unload_models: 是否卸载已加载的模型
+            free_memory: 是否释放缓存
+
+        Returns:
+            包含调用结果的字典
+        """
+        try:
+            response = self.client.post(
+                f"{self.base_url}/free",
+                json={"unload_models": unload_models, "free_memory": free_memory},
+                timeout=10
+            )
+            if response.status_code in (200, 204):
+                return {"success": True, "message": "ComfyUI memory freed"}
+            else:
+                return {"success": False, "message": f"Status {response.status_code}: {response.text[:200]}"}
+        except Exception as e:
+            return {"success": False, "message": f"Failed to free ComfyUI memory: {e}"}
+
     def generate_image(
         self,
         prompt: str,
@@ -49,7 +73,8 @@ class ComfyUIAPI:
         vae: str = "ae.safetensors",
         clip1: str = "t5xxl_fp8_e4m3fn.safetensors",
         clip2: str = "clip_l.safetensors",
-        model_type: str = "flux"
+        model_type: str = "flux",
+        free_vram_after: bool = False
     ) -> Dict[str, Any]:
         """
         通过ComfyUI 生成图片
@@ -67,6 +92,7 @@ class ComfyUIAPI:
             clip1: CLIP模型1名
             clip2: CLIP模型2名
             model_type: 模型类型 "flux" 或 "zimage"
+            free_vram_after: 生成完成后是否调用 /free 释放显存
 
         Returns:
             包含生成结果的字典
@@ -155,6 +181,11 @@ class ComfyUIAPI:
                         saved_paths = []
                         if output_path and images:
                             saved_paths = self._save_images(images, output_path)
+
+                        # 生成完成后释放 ComfyUI 占用的显存
+                        if free_vram_after:
+                            free_result = self.free_memory()
+                            print(f"  [ComfyUI] {free_result.get('message', 'memory free result unknown')}")
 
                         return {
                             "success": True,

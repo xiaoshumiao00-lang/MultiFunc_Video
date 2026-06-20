@@ -158,6 +158,8 @@ class Qwen3TTSTTS:
                     raise FileNotFoundError(f"参考音频不存在: {ref_audio_path}")
 
                 print(f"[Qwen-TTS] 使用语音克隆，参考音频: {ref_audio_path}")
+                print(f"[Qwen-TTS] 参考音频文本: {prompt_text[:100] if prompt_text else '(空)'}...")
+                print(f"[Qwen-TTS] 模型类型: {self._tts_model_type}")
                 wavs, sr = self.model.generate_voice_clone(
                     text=text,
                     ref_audio=ref_audio_path,

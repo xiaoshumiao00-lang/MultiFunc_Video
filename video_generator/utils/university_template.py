@@ -893,8 +893,12 @@ class UniversityVideoTemplate:
             shot['display_end'] = next_same_position_start
 
         # 按时间点生成帧
+        import math
         total_duration = sum(durations)
-        total_frames = int(total_duration * fps)
+        total_frames = math.ceil(total_duration * fps)
+
+        # 定期释放内存，避免大帧序列合成时内存耗尽
+        import gc
 
         for frame_idx in range(total_frames):
             current_time = frame_idx / fps
@@ -916,8 +920,18 @@ class UniversityVideoTemplate:
             )
 
             dest = temp_dir / f"frame_{frame_count:05d}.png"
-            composite_frame.save(dest, "PNG")
+            # 确保目录存在（某些 Windows 环境下大帧序列保存时可能偶发丢失父目录）
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                composite_frame.save(dest, "PNG")
+            except Exception as save_err:
+                print(f"  [WARNING] Failed to save frame {frame_count}: {save_err}")
+                raise
             frame_count += 1
+
+            # 每 30 帧释放一次内存
+            if frame_count % 30 == 0:
+                gc.collect()
 
         # 使用FFmpeg从帧序列创建视频
         # 音频音量增大200% (volume=3.0)
@@ -934,8 +948,8 @@ class UniversityVideoTemplate:
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
             "-b:a", "192k",
-            # 不设置-shortest，让视频和音频都完整保留
-            # 如果视频比音频长，最后一帧会保持显示；如果音频比视频长，音频会完整播放
+            # 使用 -shortest 保证视频与音频时长严格一致，避免声画不同步
+            "-shortest",
             output_path
         ]
 

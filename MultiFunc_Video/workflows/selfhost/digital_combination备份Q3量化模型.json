@@ -42,7 +42,7 @@
     "inputs": {
       "steps": 4,
       "cfg": 1.0000000000000002,
-      "shift": 8.0,
+      "shift": 11.000000000000002,
       "seed": 1,
       "force_offload": true,
       "scheduler": "flowmatch_distill",
@@ -262,8 +262,8 @@
         "251",
         4
       ],
-      "frame_window_size": 29,
-      "motion_frame": 14,
+      "frame_window_size": 31,
+      "motion_frame": 21,
       "force_offload": false,
       "colormatch": "mkl",
       "tiled_vae": false,

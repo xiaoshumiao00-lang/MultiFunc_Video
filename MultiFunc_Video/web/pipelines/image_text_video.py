@@ -20,6 +20,8 @@
 """
 
 import os
+import queue
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -243,11 +245,26 @@ class ImageTextVideoPipelineUI(PipelineUI):
                          disabled=True, key="itv_generate_audio_disabled")
                 return
 
-            if st.button(tr("btn.generate"), type="primary", use_container_width=True, key="itv_generate"):
+            # 生成状态管理：点击后禁用按钮，防止重复提交
+            if "itv_generating" not in st.session_state:
+                st.session_state["itv_generating"] = False
+
+            def _set_generating():
+                st.session_state["itv_generating"] = True
+
+            is_generating = st.session_state.get("itv_generating", False)
+            button_clicked = st.button(
+                tr("btn.generate"),
+                type="primary",
+                use_container_width=True,
+                key="itv_generate",
+                disabled=is_generating,
+                on_click=_set_generating
+            )
+
+            if is_generating or button_clicked:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-                log_expander = st.expander(tr("image_text_video.output.log"), expanded=False)
-                log_lines = []
 
                 def progress_callback(step: int, total: int, message: str):
                     progress = min(0.99, step / total) if total > 0 else 0
@@ -255,7 +272,8 @@ class ImageTextVideoPipelineUI(PipelineUI):
                     status_text.text(f"[{step}/{total}] {message}")
 
                 try:
-                    start_time = time.time()
+                    # 新一次生成开始时清空上一次错误
+                    st.session_state["itv_last_error"] = None
 
                     service = ImageTextVideoService()
 
@@ -267,25 +285,54 @@ class ImageTextVideoPipelineUI(PipelineUI):
                     if bgm_file:
                         bgm_file.seek(0)
 
-                    result = service.generate(
-                        text=text,
-                        ref_audio_bytes=ref_audio_bytes,
-                        ref_audio_filename=ref_audio_file.name if ref_audio_file else None,
-                        ref_audio_text=params.get("ref_audio_text", ""),
-                        bgm_bytes=bgm_bytes,
-                        bgm_filename=bgm_file.name if bgm_file else None,
-                        bgm_volume=params.get("bgm_volume", 0.3),
-                        theme=params.get("theme"),
-                        image_prompt=params.get("image_prompt", ""),
-                        speed=params.get("speed", 1.0),
-                        orientation=params.get("orientation", "portrait"),
-                        progress_callback=progress_callback,
-                        timeout=3600
-                    )
+                    # 在后台线程运行视频生成，主线程通过队列轮询进度并刷新 UI
+                    progress_queue = queue.Queue()
+                    result_queue = queue.Queue()
 
-                    # 显示日志
-                    with log_expander:
-                        st.text("\\n".join(log_lines[-200:]))
+                    def run_generation():
+                        try:
+                            def q_callback(step: int, total: int, message: str):
+                                progress_queue.put((step, total, message))
+
+                            result = service.generate(
+                                text=text,
+                                ref_audio_bytes=ref_audio_bytes,
+                                ref_audio_filename=ref_audio_file.name if ref_audio_file else None,
+                                ref_audio_path=ref_audio_path,
+                                ref_audio_text=params.get("ref_audio_text", ""),
+                                bgm_bytes=bgm_bytes,
+                                bgm_filename=bgm_file.name if bgm_file else None,
+                                bgm_volume=params.get("bgm_volume", 0.3),
+                                theme=params.get("theme"),
+                                image_prompt=params.get("image_prompt", ""),
+                                speed=params.get("speed", 1.0),
+                                orientation=params.get("orientation", "portrait"),
+                                progress_callback=q_callback,
+                                timeout=3600
+                            )
+                            result_queue.put(("success", result))
+                        except Exception as e:
+                            logger.exception(e)
+                            result_queue.put(("error", str(e)))
+
+                    thread = threading.Thread(target=run_generation, daemon=True)
+                    thread.start()
+
+                    while thread.is_alive() or not progress_queue.empty():
+                        try:
+                            step, total, message = progress_queue.get(timeout=0.2)
+                            progress_callback(step, total, message)
+                        except queue.Empty:
+                            pass
+                        # 让 Streamlit 有机会把 UI delta 推送到前端
+                        time.sleep(0.1)
+
+                    thread.join(timeout=1)
+
+                    status, payload = result_queue.get()
+                    if status == "error":
+                        raise RuntimeError(payload)
+                    result = payload
 
                     # 自动上传飞书
                     upload_info = None
@@ -302,40 +349,7 @@ class ImageTextVideoPipelineUI(PipelineUI):
                     progress_bar.progress(100)
                     status_text.text(tr("status.success"))
 
-                    total_time = time.time() - start_time
-
-                    # 展示结果
-                    st.markdown("---")
-                    st.markdown(f"### {tr('image_text_video.output.title')}")
-                    st.markdown(f"**{result['title']}**")
-
-                    st.markdown(f"### {tr('image_text_video.output.summary')}")
-                    st.markdown(result['summary'] or tr("image_text_video.output.no_summary"))
-
-                    if result.get("cover_path") and Path(result["cover_path"]).exists():
-                        st.image(result["cover_path"], caption=tr("image_text_video.output.cover"),
-                                 use_container_width=True)
-
-                    if Path(result["video_path"]).exists():
-                        file_size_mb = os.path.getsize(result["video_path"]) / (1024 * 1024)
-                        info = f"⏱️ {tr('info.generation_time')} {total_time:.1f}s   📦 {file_size_mb:.2f}MB"
-                        if upload_info:
-                            info += f"   ✅ {tr('image_text_video.output.uploaded')}"
-                        st.caption(info)
-
-                        st.video(result["video_path"])
-
-                        with open(result["video_path"], "rb") as f:
-                            st.download_button(
-                                label="⬇️ " + ("下载视频" if get_language() == "zh_CN" else "Download Video"),
-                                data=f.read(),
-                                file_name=Path(result["video_path"]).name,
-                                mime="video/mp4",
-                                use_container_width=True,
-                                key="itv_download_video"
-                            )
-
-                    # 保存结果到 session，便于历史记录
+                    # 保存结果到 session，便于历史记录和刷新后展示
                     st.session_state["itv_last_result"] = result
                     st.session_state["itv_last_upload"] = upload_info
 
@@ -343,10 +357,57 @@ class ImageTextVideoPipelineUI(PipelineUI):
                     logger.exception(e)
                     progress_bar.empty()
                     status_text.text("")
-                    with log_expander:
-                        st.text("\\n".join(log_lines[-200:]))
-                    st.error(tr("status.error", error=str(e)))
-                    st.stop()
+                    st.session_state["itv_last_error"] = str(e)
+                finally:
+                    # 解除生成中状态并刷新页面，以便重新启用按钮、展示结果或错误
+                    st.session_state["itv_generating"] = False
+                    st.rerun()
+
+            # 非生成状态下展示最近一次结果或错误
+            if not is_generating:
+                error = st.session_state.get("itv_last_error")
+                if error:
+                    st.error(tr("status.error", error=error))
+                self._display_last_result()
+
+    def _display_last_result(self):
+        """展示最近一次生成结果（从 session state 读取）"""
+        result = st.session_state.get("itv_last_result")
+        upload_info = st.session_state.get("itv_last_upload")
+        if not result:
+            return
+
+        st.markdown("---")
+        st.markdown(f"### {tr('image_text_video.output.title')}")
+        st.markdown(f"**{result.get('title', '')}**")
+
+        st.markdown(f"### {tr('image_text_video.output.summary')}")
+        st.markdown(result.get('summary') or tr("image_text_video.output.no_summary"))
+
+        cover_path = result.get("cover_path")
+        if cover_path and Path(cover_path).exists():
+            st.image(cover_path, caption=tr("image_text_video.output.cover"),
+                     use_container_width=True)
+
+        video_path = result.get("video_path")
+        if video_path and Path(video_path).exists():
+            file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+            info = f"📦 {file_size_mb:.2f}MB"
+            if upload_info:
+                info += f"   ✅ {tr('image_text_video.output.uploaded')}"
+            st.caption(info)
+
+            st.video(video_path)
+
+            with open(video_path, "rb") as f:
+                st.download_button(
+                    label="⬇️ " + ("下载视频" if get_language() == "zh_CN" else "Download Video"),
+                    data=f.read(),
+                    file_name=Path(video_path).name,
+                    mime="video/mp4",
+                    use_container_width=True,
+                    key="itv_download_video_last"
+                )
 
     def _get_theme_options(self) -> list:
         """获取视频主题选项"""

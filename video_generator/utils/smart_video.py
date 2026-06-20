@@ -44,6 +44,7 @@ class ShotSegment:
     start_time: float = 0.0     # 开始时间
     end_time: float = 0.0       # 结束时间
     duration: float = 0.0       # 时长
+    words: List[Dict] = None    # TTS 返回的字级时间戳
 
 
 class TextSegmenter:
@@ -1088,13 +1089,13 @@ class SmartVideoGenerator:
         print("=" * 60)
 
         # Step 0: 自动识别文案类别
-        print("\n[0/7] Auto-detecting video theme...")
+        print("\n[Progress] 2/10: 解析文案 / 自动分类")
         self.theme = await self._auto_detect_theme(content)
         self.watermark_text = VIDEO_THEMES.get(self.theme, {}).get("watermark", self.theme)
         print(f"  [分类] 最终使用类别: {self.theme}")
 
         # Step 1: AI分镜
-        print("\n[1/6] Generating shots...")
+        print("\n[Progress] 3/10: 生成分镜")
         shots = await self._generate_shots(content)
         if not shots:
             raise Exception("Failed to generate shots")
@@ -1103,7 +1104,7 @@ class SmartVideoGenerator:
         # Step 2: 生成视频摘要（使用本地智能提取，速度快且稳定）
         summary_path = None
         summary = None
-        print("\n[2/6] Generating video summary...")
+        print("\n[Progress] 4/10: 生成视频摘要")
         try:
             # 使用本地智能提取生成摘要（速度快，无需等待Ollama）
             summary = self.shot_generator._fallback_summary(content, self.theme)
@@ -1119,12 +1120,12 @@ class SmartVideoGenerator:
             print(f"  [WARNING] Summary generation failed: {type(e).__name__}: {e}")
 
         # Step 3: 生成音频（获取时间戳）
-        print("\n[3/6] Generating audio...")
+        print("\n[Progress] 5/10: 生成配音")
         await self._generate_audios(shots)
         print(f"  Audio generation complete")
 
         # Step 4: 生成图片
-        print("\n[4/6] Generating images...")
+        print("\n[Progress] 6/10: 生成画面")
         # 默认负向提示词，严格禁止文字出现
         default_neg_prompt = (
             "low quality, blurry, bad anatomy, distorted, "
@@ -1133,16 +1134,16 @@ class SmartVideoGenerator:
             "written words, printed text, handwriting, caption, subtitle, watermark, logo with text"
         )
         neg_prompt = negative_prompt or default_neg_prompt
-        await self._generate_images(shots, neg_prompt)
+        await self._generate_images(shots, neg_prompt, output_name)
         print(f"  Image generation complete")
 
         # Step 5: 合成字幕
-        print("\n[5/6] Generating subtitles...")
+        print("\n[Progress] 7/10: 生成字幕")
         subtitle_path = await self._generate_subtitles(shots, output_name)
         print(f"  Subtitle: {subtitle_path}")
 
         # Step 6: 合成视频
-        print("\n[6/6] Synthesizing video...")
+        print("\n[Progress] 8/10: 合成视频")
         video_path = await self._synthesize_video(shots, subtitle_path, output_name, output_folder)
         print(f"  Video: {video_path}")
 
@@ -1151,7 +1152,7 @@ class SmartVideoGenerator:
             self._stop_ollama_service()
 
         # Step 7: 生成封面
-        print("\n[7/7] Generating cover...")
+        print("\n[Progress] 9/10: 生成封面")
         cover_path = await self._generate_cover(shots, output_name, output_folder)
         if cover_path:
             print(f"  Cover: {cover_path}")
@@ -1161,8 +1162,7 @@ class SmartVideoGenerator:
         # 统计
         total_duration = shots[-1].end_time if shots else 0
 
-        print("\n" + "=" * 60)
-        print(f"Complete! Duration: {total_duration:.1f}s")
+        print(f"\nComplete! Duration: {total_duration:.1f}s")
         print(f"  Video: {video_path}")
         print(f"  Subtitle: {subtitle_path}")
         if summary_path:
@@ -1212,13 +1212,15 @@ class SmartVideoGenerator:
 
         for shot in shots:
             try:
-                audio_path, duration = await self._generate_single_audio(shot.cap, qwen_tts)
+                audio_path, duration, words = await self._generate_single_audio(shot.cap, qwen_tts)
                 shot.audio_path = audio_path
                 shot.duration = duration
+                shot.words = words
             except Exception as e:
                 print(f"  [WARNING] Audio failed for shot {shot.index}: {e}")
                 shot.audio_path = None
                 shot.duration = 2.0  # 默认2秒
+                shot.words = []
 
         # Qwen TTS 所有音频生成完毕，卸载模型释放显存
         if self.tts_mode == "qwen_tts" and qwen_tts is not None:
@@ -1233,8 +1235,8 @@ class SmartVideoGenerator:
             shot.end_time = current_time + shot.duration
             current_time = shot.end_time
 
-    async def _generate_single_audio(self, text: str, qwen_tts=None) -> Tuple[str, float]:
-        """生成单段音频"""
+    async def _generate_single_audio(self, text: str, qwen_tts=None) -> Tuple[str, float, List[Dict]]:
+        """生成单段音频并返回时间戳信息"""
         import uuid
 
         if self.tts_mode == "gpt_sovits":
@@ -1256,10 +1258,14 @@ class SmartVideoGenerator:
             audio_path = AUDIO_DIR / f"shot_{uuid.uuid4().hex[:8]}.wav"
 
             # 语音克隆模式（复用已加载的模型）
+            ref_audio_path = QWEN_TTS_SETTINGS.get("ref_audio_path")
+            prompt_text = QWEN_TTS_SETTINGS.get("prompt_text")
+            print(f"  [Qwen-TTS] 生成音频，参考音频: {ref_audio_path}")
+            print(f"  [Qwen-TTS] 参考音频文本: {prompt_text[:100] if prompt_text else '(空)'}")
             audio_result = qwen_tts.generate_with_timestamps(
                 text=text,
-                ref_audio_path=QWEN_TTS_SETTINGS.get("ref_audio_path"),
-                prompt_text=QWEN_TTS_SETTINGS.get("prompt_text"),
+                ref_audio_path=ref_audio_path,
+                prompt_text=prompt_text,
                 speaker=QWEN_TTS_SETTINGS.get("speaker"),
                 language=QWEN_TTS_SETTINGS.get("language", "Auto"),
                 output_path=str(audio_path),
@@ -1268,13 +1274,19 @@ class SmartVideoGenerator:
 
         else:
             audio_path = AUDIO_DIR / f"shot_{uuid.uuid4().hex[:8]}.mp3"
-            tts = TTsgenerator(voice=EDGE_TTS_SETTINGS["voice"])
+            tts = TTsgenerator(
+                voice=EDGE_TTS_SETTINGS.get("voice", "zh-CN-XiaoxiaoNeural"),
+                rate=EDGE_TTS_SETTINGS.get("rate", "+0%"),
+                volume=EDGE_TTS_SETTINGS.get("volume", "+100%"),
+                pitch=EDGE_TTS_SETTINGS.get("pitch", "+0Hz")
+            )
             audio_result = await tts.generate_audio_with_timestamps(text, str(audio_path))
 
         # 获取实际时长
         duration = audio_result.get("duration", 3.0)
+        words = audio_result.get("words", [])
 
-        return str(audio_path), duration
+        return str(audio_path), duration, words
 
     async def _generate_scene_and_keywords_with_ollama(self, shots: List[ShotSegment]):
         """
@@ -1524,19 +1536,36 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
             return False
 
     def _stop_ollama_service(self):
-        """停止 Ollama 服务"""
+        """停止 Ollama 服务并释放显存"""
         import subprocess
+        import time
 
         try:
-            # 结束 ollama 进程
-            subprocess.run(["taskkill", "/IM", "ollama.exe", "/F"],
-                         stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-            print("  [Ollama] Service stopped")
+            # 1. 先尝试优雅地让 Ollama 卸载当前模型（释放显存）
+            try:
+                httpx.post(
+                    "http://localhost:11434/api/generate",
+                    json={"model": self.local_llm_model, "prompt": "", "keep_alive": 0},
+                    timeout=10
+                )
+            except Exception:
+                pass
+
+            # 2. 等待 llama-server 释放显存
+            time.sleep(1)
+
+            # 3. 结束 ollama 相关进程（包括可能残留的 llama-server）
+            for proc_name in ["ollama.exe", "llama-server.exe"]:
+                subprocess.run(
+                    ["taskkill", "/IM", proc_name, "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            print("  [Ollama] Service stopped and VRAM released")
         except Exception as e:
             print(f"  [Ollama] Failed to stop service: {e}")
 
-    async def _generate_images(self, shots: List[ShotSegment], negative_prompt: str):
+    async def _generate_images(self, shots: List[ShotSegment], negative_prompt: str, output_name: str = "default"):
         """逐段生成图片"""
 
         # 根据模型类型选择提示词语言
@@ -1580,21 +1609,29 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
             return
 
         # Step 1: 使用 Ollama 生成场景描述和关键词
-        print("\n  [Step 1/2] Generating scene descriptions and keywords with Ollama...")
-        try:
-            await self._generate_scene_and_keywords_with_ollama(shots)
-        except Exception as e:
-            print(f"  [Warning] Ollama scene/keyword generation failed: {e}")
-            print(f"  [Info] Falling back to preset mappings")
+        if self.use_local_llm:
+            print("\n  [Step 1/2] Generating scene descriptions and keywords with Ollama...")
+            try:
+                await self._generate_scene_and_keywords_with_ollama(shots)
+            except Exception as e:
+                print(f"  [Warning] Ollama scene/keyword generation failed: {e}")
+                print(f"  [Info] Falling back to preset mappings")
+                for shot in shots:
+                    cap = shot.cap.strip()
+                    shot.scene_prompt = self._extract_scene_from_cap_zh(cap) if DEFAULT_IMAGE_MODEL == "zimage" else self._extract_scene_from_cap_en(cap)
+                    kw_list = self._extract_keywords_from_cap(cap)
+                    shot.desc_keywords = [kw_list[0]] if kw_list else [""]
+
+            # 关键：确保 Ollama 已完全停止并释放显存，再启动 ComfyUI
+            print("  [Memory] Clearing Ollama residual VRAM...")
+            self._stop_ollama_service()
+        else:
+            print("\n  [Step 1/2] Skipping Ollama (use_local_llm=False), using preset mappings...")
             for shot in shots:
                 cap = shot.cap.strip()
                 shot.scene_prompt = self._extract_scene_from_cap_zh(cap) if DEFAULT_IMAGE_MODEL == "zimage" else self._extract_scene_from_cap_en(cap)
                 kw_list = self._extract_keywords_from_cap(cap)
                 shot.desc_keywords = [kw_list[0]] if kw_list else [""]
-
-        # 关键：确保 Ollama 已完全停止并释放显存，再启动 ComfyUI
-        print("  [Memory] Clearing Ollama residual VRAM...")
-        self._stop_ollama_service()
         # 等待进程完全终止
         import time
         time.sleep(1)
@@ -1616,9 +1653,12 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
             api = get_comfyui_api()
 
             if not api.is_alive():
-                print("  [WARNING] ComfyUI not available")
-                for shot in shots:
-                    shot.image_path = None
+                print("  [WARNING] ComfyUI not available, generating fallback images")
+                for i, shot in enumerate(shots):
+                    fallback_path = await self._create_default_image(
+                        [shot], f"{output_name}_shot_{i}", width=1120, height=840
+                    )
+                    shot.image_path = fallback_path
                 return
 
             for i, shot in enumerate(shots):
@@ -1651,10 +1691,25 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
                 if result["success"] and result.get("saved_paths"):
                     shot.image_path = result["saved_paths"][0]
                 else:
-                    print(f"    [WARNING] Image generation failed")
+                    print(f"    [WARNING] Image generation failed, using fallback")
+                    fallback_path = await self._create_default_image(
+                        [shot], f"{output_name}_shot_{i}", width=1120, height=840
+                    )
+                    shot.image_path = fallback_path
+
+            # 所有图片生成完成后统一释放 ComfyUI 显存
+            print("  [Memory] Freeing ComfyUI VRAM after all images generated...")
+            free_result = api.free_memory()
+            print(f"  [Memory] {free_result.get('message', 'VRAM free result unknown')}")
 
         except Exception as e:
             print(f"  [ERROR] Image generation error: {e}")
+            for i, shot in enumerate(shots):
+                if not shot.image_path:
+                    fallback_path = await self._create_default_image(
+                        [shot], f"{output_name}_shot_{i}", width=1120, height=840
+                    )
+                    shot.image_path = fallback_path
 
     def _extract_scene_from_cap_en(self, cap: str) -> str:
         """
@@ -1873,14 +1928,12 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
 
     async def _generate_subtitles(self, shots: List[ShotSegment], output_name: str) -> str:
         """生成字幕文件"""
-        # 收集所有时间轴
+        # 收集所有时间轴，优先使用 TTS 返回的时间戳
         all_words = []
         for shot in shots:
-            if shot.audio_path and shot.audio_path.endswith('.wav'):
-                # 尝试从GPT-SoVITS获取精确时间轴
-                words = self._get_words_from_shot(shot)
-            else:
-                # 使用均匀分配
+            words = self._get_words_from_shot(shot)
+            if not words:
+                # 如果时间戳为空，回退到均匀分配
                 words = self._estimate_words_timing(shot)
             all_words.extend(words)
 
@@ -1889,13 +1942,28 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
         return str(subtitle_path)
 
     def _get_words_from_shot(self, shot: ShotSegment) -> List[Dict]:
-        """从音频结果获取单词时间轴"""
-        # 简化处理：按字符均匀分配时间
+        """从音频结果获取单词时间轴
+
+        优先使用 TTS 返回的真实/估算时间戳，并叠加到 shot 的全局时间轴上。
+        如果时间戳不可用，则回退到均匀分配。
+        """
         words = []
         cap = shot.cap
         duration = shot.duration
         char_count = len(cap)
 
+        # 优先使用 TTS 返回的时间戳（Edge-TTS 为真实时间戳，其余为模型估算）
+        shot_words = getattr(shot, "words", None)
+        if shot_words:
+            for w in shot_words:
+                words.append({
+                    "word": w.get("word", ""),
+                    "start": shot.start_time + w.get("start", 0.0),
+                    "end": shot.start_time + w.get("end", 0.0),
+                })
+            return words
+
+        # 回退：按字符均匀分配时间
         for i, char in enumerate(cap):
             start_ratio = i / char_count if char_count > 0 else 0
             end_ratio = (i + 1) / char_count if char_count > 0 else 1
@@ -2120,14 +2188,22 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
             seg_path = IMAGES_DIR / f"seg_{i}_{output_name}.mp4"
             seg_duration = shot.end_time - shot.start_time
 
+            # 准备音频输入：有音频用音频文件，无音频用 lavfi anullsrc 生成静音
+            if shot.audio_path and Path(shot.audio_path).exists():
+                audio_input = ["-i", shot.audio_path]
+                audio_filter = "volume=2.0"
+            else:
+                audio_input = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+                audio_filter = "volume=0.0"
+
             cmd = [
                 "ffmpeg", "-y",
                 "-loop", "1",
                 "-i", shot.image_path,
-                "-i", shot.audio_path if shot.audio_path else "anullsrc",
+            ] + audio_input + [
                 "-t", str(seg_duration),
                 "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},format=yuv420p",
-                "-af", "volume=2.0",  # 音频音量增大200%
+                "-af", audio_filter,
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-crf", "20",
@@ -2144,6 +2220,8 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
                 result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
                 if result.returncode == 0:
                     segment_files.append(str(seg_path))
+                else:
+                    print(f"  [ERROR] Segment {i} failed: {result.stderr[:200] if result.stderr else 'unknown'}")
             except Exception as e:
                 print(f"  [ERROR] Segment {i} error: {e}")
 
@@ -2177,43 +2255,136 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
         """同步版本"""
         return asyncio.run(self.generate(content, output_name, positive_prompt, negative_prompt))
 
-    async def _create_default_image(self, shots: List[ShotSegment], output_name: str) -> str:
-        """创建默认图片"""
+    async def _create_default_image(self, shots: List[ShotSegment], output_name: str,
+                                     width: int = None, height: int = None) -> str:
+        """创建默认图片
+
+        Args:
+            shots: 分镜列表（用于提取文案）
+            output_name: 输出文件名
+            width: 图片宽度，默认使用视频宽度
+            height: 图片高度，默认使用视频高度
+        """
         from PIL import Image, ImageDraw, ImageFont
 
-        width = VIDEO_SETTINGS.get("width", 1080)
-        height = VIDEO_SETTINGS.get("height", 1920)
+        if width is None:
+            width = VIDEO_SETTINGS.get("width", 1080)
+        if height is None:
+            height = VIDEO_SETTINGS.get("height", 1920)
 
         img_path = IMAGES_DIR / f"{output_name}_default.png"
-        img = Image.new('RGB', (width, height), color=(50, 50, 80))
+        # 使用温暖的浅色调背景，避免 UniversityVideoTemplate 中灰占位框的廉价感
+        img = Image.new('RGB', (width, height), color=(245, 247, 250))
         draw = ImageDraw.Draw(img)
 
+        # 尝试加载中文字体，优先使用系统黑体
+        font_size_title = max(32, min(60, width // 18))
+        font_size_body = max(24, min(40, width // 24))
         try:
-            font = ImageFont.truetype("arial.ttf", 60)
+            font_title = ImageFont.truetype("simhei.ttf", font_size_title)
+            font_body = ImageFont.truetype("simhei.ttf", font_size_body)
         except:
-            font = ImageFont.load_default()
+            try:
+                font_title = ImageFont.truetype("msyh.ttc", font_size_title)
+                font_body = ImageFont.truetype("msyh.ttc", font_size_body)
+            except:
+                font_title = ImageFont.load_default()
+                font_body = font_title
 
-        # 显示水印
-        text = self.watermark_text
-        bbox = draw.textbbox((0, 0), text, font=font)
+        # 绘制主题标签
+        theme_text = self.watermark_text or "图文视频"
+        bbox = draw.textbbox((0, 0), theme_text, font=font_title)
         text_width = bbox[2] - bbox[0]
-        draw.text(((width - text_width) // 2, height // 2),
-                 text, fill=(255, 255, 255), font=font)
+        draw.text(((width - text_width) // 2, height // 3),
+                 theme_text, fill=(80, 120, 180), font=font_title)
+
+        # 绘制分镜文案（取第一句）
+        body_text = ""
+        if shots and shots[0].cap:
+            body_text = shots[0].cap.strip()
+            if len(body_text) > 40:
+                body_text = body_text[:40] + "..."
+        if body_text:
+            # 简单换行处理
+            max_chars_per_line = max(10, width // font_size_body)
+            lines = []
+            for i in range(0, len(body_text), max_chars_per_line):
+                lines.append(body_text[i:i+max_chars_per_line])
+            y_offset = height // 2
+            for line in lines[:3]:
+                bbox = draw.textbbox((0, 0), line, font=font_body)
+                line_width = bbox[2] - bbox[0]
+                draw.text(((width - line_width) // 2, y_offset),
+                         line, fill=(100, 100, 100), font=font_body)
+                y_offset += font_size_body + 10
+
+        # 添加 subtle 装饰边框
+        draw.rectangle([20, 20, width - 20, height - 20],
+                      outline=(200, 210, 230), width=4)
 
         img.save(img_path)
         return str(img_path)
 
     async def _merge_audios(self, shots: List[ShotSegment], output_name: str) -> str:
-        """合并多段音频"""
+        """合并多段音频
+
+        为保证声画同步，每个 shot 都必须有对应时长的音频：
+        - 成功生成的音频直接使用
+        - 生成失败的 shot 会用静音填充到其 duration
+        """
         import subprocess
+        import uuid
 
         merged_path = AUDIO_DIR / f"{output_name}_merged.wav"
 
-        # 过滤有效的音频
-        valid_audios = [s.audio_path for s in shots if s.audio_path and Path(s.audio_path).exists()]
+        # 为每个 shot 准备等长音频（成功音频或静音填充）
+        segment_audios = []
+        for i, shot in enumerate(shots):
+            if shot.audio_path and Path(shot.audio_path).exists():
+                # 校验实际时长是否与 shot.duration 一致，偏差过大时补齐/截断
+                actual_duration = self._get_audio_duration(str(shot.audio_path))
+                if actual_duration is not None and abs(actual_duration - shot.duration) > 0.05:
+                    print(f"  [WARNING] Audio duration mismatch for shot {i}: "
+                          f"expected {shot.duration:.2f}s, got {actual_duration:.2f}s, adjusting")
+                    padded_path = AUDIO_DIR / f"{output_name}_pad_{uuid.uuid4().hex[:8]}.wav"
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", str(shot.audio_path),
+                        "-af", "apad=whole_len=0",
+                        "-t", str(shot.duration),
+                        "-c:a", "pcm_s16le",
+                        "-ar", "44100",
+                        "-ac", "2",
+                        str(padded_path)
+                    ]
+                    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
+                    if result.returncode == 0:
+                        segment_audios.append(str(padded_path))
+                    else:
+                        segment_audios.append(str(shot.audio_path))
+                else:
+                    segment_audios.append(str(shot.audio_path))
+            else:
+                # 生成静音填充，时长精确匹配 shot.duration
+                silent_path = AUDIO_DIR / f"{output_name}_silent_{uuid.uuid4().hex[:8]}.wav"
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                    "-t", str(shot.duration),
+                    "-c:a", "pcm_s16le",
+                    "-ar", "44100",
+                    "-ac", "2",
+                    str(silent_path)
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
+                if result.returncode == 0:
+                    segment_audios.append(str(silent_path))
+                    print(f"  [INFO] Silent padding generated for shot {i}: {shot.duration:.2f}s")
+                else:
+                    print(f"  [WARNING] Failed to generate silent padding for shot {i}")
 
-        if not valid_audios:
-            # 创建静音文件
+        if not segment_audios:
+            # 没有任何分镜时创建 10 秒静音
             silent_wav = AUDIO_DIR / f"{output_name}_silent.wav"
             cmd = [
                 "ffmpeg", "-y",
@@ -2225,13 +2396,13 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
             return str(silent_wav)
 
         # 如果只有一段音频，直接返回
-        if len(valid_audios) == 1:
-            return valid_audios[0]
+        if len(segment_audios) == 1:
+            return segment_audios[0]
 
         # 创建concat列表文件
         concat_list_path = AUDIO_DIR / f"{output_name}_concat.txt"
-        with open(concat_list_path, 'w') as f:
-            for audio_path in valid_audios:
+        with open(concat_list_path, 'w', encoding='utf-8') as f:
+            for audio_path in segment_audios:
                 f.write(f"file '{audio_path}'\n")
 
         # 使用FFmpeg concat方式合并
@@ -2248,53 +2419,36 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
             result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
             if result.returncode != 0:
                 print(f"  [WARNING] Audio merge failed: {result.stderr[:200] if result.stderr else 'unknown'}")
-                # 回退：把所有音频静音填充到最长音频长度后拼接
-                return await self._merge_audios_fallback(valid_audios, merged_path)
+                # 回退：使用 amix 前先把所有音频 pad 到总时长再混合会同时播放，改为串接 fallback
+                return await self._concat_audios_fallback(segment_audios, merged_path)
         except Exception as e:
             print(f"  [ERROR] Audio merge error: {e}")
-            return valid_audios[0] if valid_audios else str(merged_path)
+            return segment_audios[0] if segment_audios else str(merged_path)
 
         return str(merged_path)
 
-    async def _merge_audios_fallback(self, audio_paths: List[str], output_path: Path) -> str:
-        """备用音频合并方法：使用FFmpeg混合"""
+    async def _concat_audios_fallback(self, audio_paths: List[str], output_path: Path) -> str:
+        """备用音频合并方法：使用 FFmpeg concat demuxer 串接音频
+
+        与 amix 不同，此函数按顺序拼接音频，避免所有句子同时播放。
+        """
         import subprocess
 
-        # 方案：把所有音频pad到相同长度然后混合
-        # 找到最长音频的时长
-        max_duration = 0
-        for path in audio_paths:
-            try:
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-i", path,
-                    "-vn",
-                    "-f", "null",
-                    "-"
-                ]
-                result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
-                # 从输出中提取时长
-                import re
-                match = re.search(r'Duration: (\d+):(\d+):(\d+)', result.stderr)
-                if match:
-                    h, m, s = int(match[1]), int(match[2]), int(match[3])
-                    duration = h * 3600 + m * 60 + s
-                    max_duration = max(max_duration, duration)
-            except:
-                pass
-
-        if max_duration == 0:
+        if not audio_paths:
+            return str(output_path)
+        if len(audio_paths) == 1:
             return audio_paths[0]
 
-        # 使用amix混合所有音频
-        inputs = []
-        for path in audio_paths:
-            inputs.extend(["-i", path])
+        concat_list_path = output_path.parent / f"{output_path.stem}_fallback_concat.txt"
+        with open(concat_list_path, 'w', encoding='utf-8') as f:
+            for path in audio_paths:
+                f.write(f"file '{path}'\n")
 
         cmd = [
-            "ffmpeg", "-y"
-        ] + inputs + [
-            "-filter_complex", f"amix=inputs={len(audio_paths)}:duration=longest",
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_list_path),
             "-c:a", "pcm_s16le",
             "-ar", "44100",
             "-ac", "2",
@@ -2305,10 +2459,32 @@ Please output only 1 keyword, no prefixes or suffixes, nothing else."""
             result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
             if result.returncode == 0:
                 return str(output_path)
-        except:
-            pass
+            else:
+                print(f"  [WARNING] Concat fallback failed: {result.stderr[:200] if result.stderr else 'unknown'}")
+        except Exception as e:
+            print(f"  [ERROR] Concat fallback error: {e}")
 
         return audio_paths[0]
+
+    def _get_audio_duration(self, audio_path: str) -> Optional[float]:
+        """使用 ffprobe 获取音频实际时长"""
+        import subprocess
+        import re
+        try:
+            cmd = [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                audio_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
+            if result.returncode == 0:
+                duration_str = result.stdout.strip()
+                if duration_str:
+                    return float(duration_str)
+        except Exception:
+            pass
+        return None
 
     async def _create_multi_shot_video(self, shots: List[ShotSegment],
                                      audio_path: str,
